@@ -1,5 +1,5 @@
 #syntax=docker/dockerfile:1
-# Official DependencyVerifier agent image (ghcr.io/depverify/agent), used by the `container` mode.
+# Official DependencyVerifier agent image (ghcr.io/dependencyverifier/agent), used by the `container` mode.
 # Build from agent/:  docker build -t depverify-agent .
 # See docs/cadrage.md §6bis. Multi-arch (amd64/arm64) and cosign signing happen in CI (not yet set up).
 
