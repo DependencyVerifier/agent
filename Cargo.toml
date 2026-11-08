@@ -1,11 +1,11 @@
 [package]
-name = "depradar-agent"
+name = "depverify-agent"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "DepRadar agent: inventories what runs in production and reports it to a DepRadar console over an outbound-only, signed connection."
+description = "DependencyVerifier agent: inventories what runs in production and reports it to a DependencyVerifier console over an outbound-only, signed connection."
 license = "Apache-2.0"
-repository = "https://github.com/depradar/depradar"
+repository = "https://github.com/depverify/depverify"
 publish = false
 
 [dependencies]
