@@ -15,6 +15,8 @@ docker run --rm -v "$PWD":/work -w /work rust:1 cargo clippy --all-targets -- -D
 docker run --rm -v "$PWD":/work -w /work rust:1 cargo fmt
 ```
 
+CI (`.github/workflows/ci.yml`): `cargo fmt --check`, `clippy -D warnings`, `cargo test` on `rust:1`, and a static musl release build on `rust:1-alpine`. Dependabot updates crates and Actions weekly.
+
 Official image `ghcr.io/dependencyverifier/agent` (`container` mode): built by the [`agent-image`](https://github.com/DependencyVerifier/agent-image) repository from this one (static musl binary on `scratch`, non-root, configured only through env vars and secrets). Keep the binary buildable with `cargo build --release --locked` on `rust:1-alpine`.
 
 Docker access in `container` mode: the agent **never mounts the Docker socket** itself. It goes through a `tecnativa/docker-socket-proxy` sidecar that allows GET only (`CONTAINERS=1`, `IMAGES=1`, `INFO=1`, `VERSION=1`, `POST=0`) on an `internal: true` network. Hardening defaults for the agent service: `read_only: true`, `cap_drop: [ALL]`, `no-new-privileges:true` (see §6bis for the full example).

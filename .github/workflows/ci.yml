@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Format, lint and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: rust:1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /usr/local/cargo/registry
+            target
+          key: cargo-check-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-check-
+
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  static:
+    name: Static musl build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: rust:1-alpine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - run: apk add --no-cache musl-dev file
+      - run: cargo build --release --locked
+      # The agent ships as one static binary (scratch image, curl | sh install).
+      - name: Check the binary is static
+        run: file target/release/depverify-agent | tee /dev/stderr | grep -q 'static'
+      - run: ./target/release/depverify-agent
