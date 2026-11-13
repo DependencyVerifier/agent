@@ -171,6 +171,9 @@ pub fn collect(
             if let Some((name, version)) = runtime {
                 fields["runtime"] = json!({"name": name, "version": version});
             }
+            if let Some(requires) = app.requires_field() {
+                fields["requires"] = requires;
+            }
             let name = found
                 .path
                 .rsplit('/')

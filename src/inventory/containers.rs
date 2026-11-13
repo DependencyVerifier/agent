@@ -8,6 +8,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
+use super::apps::AppPackages;
 use super::files::{MAX_FILE, Memory};
 use super::{Document, Package, apps, os, sbom};
 use crate::config::Scope;
@@ -172,23 +173,22 @@ fn label_paths(container: &Container) -> Vec<String> {
 
 /// The dependencies of an application running in a container: the label paths, else its working directory and the
 /// usual places; the first directory holding a manifest wins.
-fn app_packages(docker: &Docker, container: &Container) -> Vec<Package> {
-    let mut dirs = label_paths(container);
+fn app_packages(docker: &Docker, container: &Container, inspect: Option<&Value>) -> AppPackages {
+    let labelled = label_paths(container);
+    let mut dirs = labelled.clone();
     if dirs.is_empty() {
-        if let Ok(inspect) = docker.json(&format!("/containers/{}/json", container.id)) {
-            if let Some(dir) = inspect
-                .get("Config")
-                .and_then(|c| c.get("WorkingDir"))
-                .and_then(Value::as_str)
-                .filter(|d| d.starts_with('/') && *d != "/")
-            {
-                dirs.push(dir.to_owned());
-            }
+        if let Some(dir) = inspect
+            .and_then(|i| i.get("Config"))
+            .and_then(|c| c.get("WorkingDir"))
+            .and_then(Value::as_str)
+            .filter(|d| d.starts_with('/') && *d != "/")
+        {
+            dirs.push(dir.to_owned());
         }
         dirs.extend(DEFAULT_DIRS.iter().map(|d| (*d).to_owned()));
         dirs.dedup();
     }
-    let mut packages = Vec::new();
+    let mut found = Vec::new();
     for dir in dirs {
         let mut files = Memory::default();
         for marker in [
@@ -207,14 +207,53 @@ fn app_packages(docker: &Docker, container: &Container) -> Vec<Package> {
         }
         let app = apps::catalog(&files, &dir);
         if !app.is_empty() {
-            packages.extend(app.packages);
-            if !label_paths(container).is_empty() {
-                continue; // every labelled path counts
+            found.push(app);
+            if labelled.is_empty() {
+                break; // every labelled path counts
             }
-            break;
         }
     }
-    packages
+    apps::merge(found)
+}
+
+/// The runtime of an application in a container, from the version the official images set in the environment
+/// (`PHP_VERSION`, `NODE_VERSION`). Only these two variables are read, never the others: they may hold secrets.
+pub fn runtime(inspect: Option<&Value>, app: &AppPackages) -> Option<Value> {
+    let (name, variable) = if app.php {
+        ("php", "PHP_VERSION")
+    } else if app.node {
+        ("node", "NODE_VERSION")
+    } else {
+        return None;
+    };
+    let version = inspect?
+        .get("Config")?
+        .get("Env")?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .find_map(|entry| entry.strip_prefix(variable)?.strip_prefix('='))?;
+    let valid = version.len() <= 32
+        && version.starts_with(|c: char| c.is_ascii_digit())
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".+-_".contains(c));
+    valid.then(|| json!({"name": name, "version": version}))
+}
+
+/// The application fields read in the running container: its runtime and the versions its project declares.
+fn app_fields(docker: &Docker, container: &Container, fields: &mut Value) -> Vec<Package> {
+    let inspect = docker
+        .json(&format!("/containers/{}/json", container.id))
+        .ok();
+    let app = app_packages(docker, container, inspect.as_ref());
+    if let Some(runtime) = runtime(inspect.as_ref(), &app) {
+        fields["runtime"] = runtime;
+    }
+    if let Some(requires) = app.requires_field() {
+        fields["requires"] = requires;
+    }
+    app.packages
 }
 
 pub fn collect(
@@ -267,19 +306,16 @@ pub fn collect(
             fields["labels"] = labels;
         }
         let name = first.label("dev.depverify.name").unwrap_or(service);
-        let document = sbom::document(&key, "application", name, &app_packages(docker, first));
+        let packages = app_fields(docker, first, &mut fields);
+        let document = sbom::document(&key, "application", name, &packages);
         images.insert(first.image_id.clone());
         subjects.push((fields, document));
     }
     for container in &standalone {
         let key = format!("container:{}", container.name);
-        let fields = json!({"subject_key": key, "kind": "container", "container_name": container.name, "container_id": container.id, "image_id": container.image_id});
-        let document = sbom::document(
-            &key,
-            "application",
-            &container.name,
-            &app_packages(docker, container),
-        );
+        let mut fields = json!({"subject_key": key, "kind": "container", "container_name": container.name, "container_id": container.id, "image_id": container.image_id});
+        let packages = app_fields(docker, container, &mut fields);
+        let document = sbom::document(&key, "application", &container.name, &packages);
         images.insert(container.image_id.clone());
         subjects.push((fields, document));
     }
@@ -594,6 +630,54 @@ mod tests {
             !in_scope(&app, Scope::Compose, None, None),
             "no project known: nothing in compose scope"
         );
+    }
+
+    #[test]
+    fn reads_only_the_runtime_version_of_the_environment() {
+        let inspect = json!({"Config": {"Env": ["APP_SECRET=s3cr3t", "PHP_VERSION=8.3.14", "NODE_VERSION=22.11.0", "PHP_VERSION_X=1"]}});
+        let php = AppPackages {
+            php: true,
+            node: true,
+            ..AppPackages::default()
+        };
+        let node = AppPackages {
+            node: true,
+            ..AppPackages::default()
+        };
+        assert_eq!(
+            runtime(Some(&inspect), &php),
+            Some(json!({"name": "php", "version": "8.3.14"})),
+            "PHP first."
+        );
+        assert_eq!(
+            runtime(Some(&inspect), &node),
+            Some(json!({"name": "node", "version": "22.11.0"}))
+        );
+        assert_eq!(
+            runtime(Some(&inspect), &AppPackages::default()),
+            None,
+            "No application, no runtime."
+        );
+        assert_eq!(runtime(None, &php), None);
+        for env in [
+            "PHP_VERSION=",
+            "PHP_VERSION=latest",
+            "PHP_VERSION=8.3 && rm",
+            "PHP_VERSION_X=8.3",
+            "PHPVERSION=8.3",
+        ] {
+            let inspect = json!({"Config": {"Env": [env]}});
+            assert_eq!(runtime(Some(&inspect), &php), None, "{env}");
+        }
+        let long = json!({"Config": {"Env": [format!("PHP_VERSION=8.{}", "1".repeat(31))]}});
+        assert_eq!(runtime(Some(&long), &php), None);
+        let edge = json!({"Config": {"Env": [format!("PHP_VERSION=8.{}", "1".repeat(30))]}});
+        assert!(
+            runtime(Some(&edge), &php).is_some(),
+            "32 characters at most."
+        );
+        let rc = json!({"Config": {"Env": ["PHP_VERSION=8.5.0RC1-dev_x+1"]}});
+        assert!(runtime(Some(&rc), &php).is_some());
     }
 
     #[test]
