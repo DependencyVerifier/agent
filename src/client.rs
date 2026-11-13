@@ -104,6 +104,30 @@ impl Console {
         })
     }
 
+    /// A public file of the console (a release of the agent), at most `max` bytes; any other status is an error.
+    pub fn download(&self, path: &str, max: u64) -> Result<Vec<u8>, String> {
+        let request = ureq::http::Request::builder()
+            .method("GET")
+            .uri(format!("{}{path}", self.base.trim_end_matches('/')))
+            .body(Vec::new())
+            .map_err(|e| e.to_string())?;
+        let mut response = self.http.run(request).map_err(|e| e.to_string())?;
+        if response.status().as_u16() != 200 {
+            return Err(format!("{path}: HTTP {}", response.status().as_u16()));
+        }
+        let mut bytes = Vec::new();
+        response
+            .body_mut()
+            .as_reader()
+            .take(max + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > max {
+            return Err(format!("{path}: larger than {max} bytes"));
+        }
+        Ok(bytes)
+    }
+
     /// A signed request; a `clock_skew` corrects the offset and is tried once more, as is a signature refused
     /// (`invalid_signature`, `replayed_request`), always with a fresh nonce (§4.4, §9).
     pub fn send(

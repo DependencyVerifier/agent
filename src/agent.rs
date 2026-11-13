@@ -278,6 +278,7 @@ impl Agent {
         let approved = reply.json.get("status").and_then(Value::as_str) == Some("approved");
 
         let mut scan_now = false;
+        let mut upgraded: Option<std::path::PathBuf> = None;
         for envelope in reply
             .json
             .get("orders")
@@ -308,6 +309,21 @@ impl Agent {
                     }
                     ("executed", None)
                 }
+                Ok(Order::UpgradeAgent(version)) => match self.upgrade(&version) {
+                    Ok(path) => {
+                        log!("version {version} verified and installed");
+                        upgraded = Some(path);
+                        ("executed", None)
+                    }
+                    Err(("rejected", reason)) => {
+                        log!("upgrade to {version} refused: {reason}");
+                        ("rejected", Some(reason))
+                    }
+                    Err((status, reason)) => {
+                        log!("upgrade to {version} failed: {reason}");
+                        (status, Some(reason))
+                    }
+                },
                 Err(reason) => {
                     log!("order {} rejected: {reason}", checked.order_id);
                     ("rejected", Some(reason))
@@ -321,6 +337,11 @@ impl Agent {
             });
         }
         self.save();
+        if let Some(path) = upgraded {
+            // The new binary reports the result at its first poll.
+            let error = crate::upgrade::exec(&path);
+            log!("could not run {}: {error}", path.display());
+        }
 
         if approved {
             let due = self.state.last_scan.is_none_or(|last| {
@@ -365,6 +386,44 @@ impl Agent {
         }
         // A finished SCAN_NOW is reported at once (§6.2).
         Ok(if scan_now { 30 } else { next })
+    }
+
+    /// `UPGRADE_AGENT`: host mode only, a newer version, its release downloaded from the console and verified with
+    /// the release key embedded in this binary, then installed in the state directory.
+    fn upgrade(&self, version: &str) -> Result<std::path::PathBuf, (&'static str, &'static str)> {
+        use crate::{release, upgrade};
+        if self.config.mode != Mode::Host {
+            return Err(("rejected", "unsupported_mode"));
+        }
+        if !release::is_newer(version, env!("CARGO_PKG_VERSION")) {
+            return Err(("rejected", "not_newer"));
+        }
+        let get = |name: &str, max: u64| {
+            self.console
+                .download(&format!("/downloads/agent/{version}/{name}"), max)
+                .map_err(|e| {
+                    log!("download of {name} failed: {e}");
+                    ("failed", "download_failed")
+                })
+        };
+        let sums = get(upgrade::SUMS, 64 * 1024)?;
+        let signature = String::from_utf8(get(upgrade::SIGNATURE, 64 * 1024)?)
+            .map_err(|_| ("failed", "bad_signature"))?;
+        let name = upgrade::binary_name();
+        let binary = get(&name, 64 * 1024 * 1024)?;
+        upgrade::check(
+            &release::ReleaseKey::embedded(),
+            version,
+            &name,
+            &binary,
+            &sums,
+            &signature,
+        )
+        .map_err(|reason| ("failed", reason))?;
+        upgrade::install(&self.config.state_dir, version, &binary, &sums, &signature).map_err(|e| {
+            log!("install of {version} failed: {e}");
+            ("failed", "install_failed")
+        })
     }
 
     fn image_changed(&mut self) -> bool {

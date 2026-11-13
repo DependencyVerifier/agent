@@ -13,6 +13,8 @@ use crate::state::{CollectConfig, State};
 pub enum Order {
     ScanNow,
     SetConfig(CollectConfig),
+    /// The version to run (host mode), verified with the release key embedded in the agent.
+    UpgradeAgent(String),
 }
 
 pub struct Checked {
@@ -96,6 +98,14 @@ fn verify(
             .ok_or("invalid_payload"),
         Some("SET_CONFIG") => set_config(payload)
             .map(Order::SetConfig)
+            .ok_or("invalid_payload"),
+        Some("UPGRADE_AGENT") => payload
+            .get("version")
+            .and_then(Value::as_str)
+            .filter(|v| {
+                crate::release::is_version(v) && payload.as_object().is_some_and(|o| o.len() == 1)
+            })
+            .map(|v| Order::UpgradeAgent(v.to_owned()))
             .ok_or("invalid_payload"),
         _ => Err("unknown_type"),
     }
@@ -239,6 +249,73 @@ mod tests {
         assert!(
             reject(&envelope, &state, 1_794_212_100 + 60).is_ok(),
             "within the tolerance"
+        );
+    }
+
+    /// The order of the vector with another type and payload, signed again with the console seed of the vector.
+    fn signed(kind: &str, payload: Value) -> Value {
+        use base64::Engine;
+        use ed25519_dalek::{Signer, SigningKey};
+        let vector: Value = serde_json::from_str(VECTOR).unwrap();
+        let seed: [u8; 32] = (0..32)
+            .map(|i| {
+                u8::from_str_radix(
+                    &vector["console_private_key_seed_hex"].as_str().unwrap()[i * 2..i * 2 + 2],
+                    16,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<u8>>()
+            .try_into()
+            .unwrap();
+        let mut envelope = vector["signed_order"].clone();
+        envelope["order"]["type"] = kind.into();
+        envelope["order"]["payload"] = payload;
+        envelope["order"]["order_id"] = format!(
+            "019a6b2e-7c40-7d3e-9f1a-{:012x}",
+            jcs::canonical(&envelope["order"]).len()
+        )
+        .into();
+        let signature =
+            SigningKey::from_bytes(&seed).sign(jcs::canonical(&envelope["order"]).as_bytes());
+        envelope["signature"]["value"] = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(signature.to_bytes())
+            .into();
+        envelope
+    }
+
+    #[test]
+    fn reads_an_upgrade_order() {
+        let (_, console, mut state, now) = setup();
+        let mut outcome = |payload: Value| {
+            check(&signed("UPGRADE_AGENT", payload), &console, &mut state, now).outcome
+        };
+        assert_eq!(
+            outcome(serde_json::json!({"version": "0.2.0"})),
+            Ok(Order::UpgradeAgent("0.2.0".into()))
+        );
+        for payload in [
+            serde_json::json!({"version": "latest"}),
+            serde_json::json!({"version": 2}),
+            serde_json::json!({}),
+            serde_json::json!({"version": "0.3.0", "url": "https://elsewhere"}),
+            serde_json::json!("0.3.1"),
+        ] {
+            assert_eq!(
+                outcome(payload.clone()),
+                Err("invalid_payload"),
+                "{payload}"
+            );
+        }
+        assert_eq!(
+            check(
+                &signed("ROTATE_EVERYTHING", serde_json::json!({})),
+                &console,
+                &mut state,
+                now
+            )
+            .outcome,
+            Err("unknown_type")
         );
     }
 

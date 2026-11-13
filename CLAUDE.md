@@ -28,7 +28,7 @@ Docker access in `container` mode: the agent **never mounts the Docker socket** 
 - **Outbound HTTPS only**, no listening socket. Every request is Ed25519-signed (method, path, timestamp, body hash). Polling interval, `429` and `Retry-After` always come from the console; add jitter.
 - The console public key is **pinned** at install. Refuse everything if it changes (rotation only via an order signed by the old key).
 - **Closed order catalogue** (`SCAN_NOW`, `SET_CONFIG`; later `UPGRADE_AGENT`, `ROTATE_KEY`). Orders are signed, time-bounded, with persisted anti-replay. **Never run arbitrary shell commands**: external commands come from a fixed list (`rpm -qa --qf …`, `php -v`, `node -v`…), with no shell interpolation.
-- Upgrades are verified with the **project release key embedded in the binary**, never with the console key.
+- Upgrades are verified with the **project release key embedded in the binary** (`release::RELEASE_KEY`), never with the console key.
 - Private key `0600`, state in `/var/lib/depverify-agent` (or the container volume). Never log secrets or the token.
 - Container scopes: apply the scope filter **before** any file read or image analysis, and test that behavior.
 - Catalogers are written in-house (no Syft in Rust) and tested against **real fixtures** (dpkg status, apk installed, `installed.json`, lockfiles…).
@@ -41,7 +41,10 @@ Docker access in `container` mode: the agent **never mounts the Docker socket** 
 - Determinism: SBOMs and host facts are `serde_json` values with sorted keys, components sorted by purl, no timestamp: an unchanged machine re-uploads nothing.
 - Containers: the scope filter (`containers::in_scope`) runs on the container list **before** any inspect or file read (tested). Application files come from `GET /containers/{id}/archive` (label paths, else the working directory and usual places); image OS packages from `GET /images/{id}/get`, layers streamed (legacy and OCI layouts, gzip or not), whiteouts applied, cached per image id and agent version in `<state>/images/`. The runtime of a containerized application is the `PHP_VERSION` / `NODE_VERSION` variable of its container (these two only, never the rest of the environment); every application subject also carries `requires` (`require.php` of `composer.json`, `engines.node` of `package.json`).
 - Releases: a tag `vX.Y.Z` runs `.github/workflows/release.yml` (both architectures with `cargo-zigbuild` 0.24 / zig 0.17, `SHA256SUMS` signed with minisign, GitHub release). The console verifies them (`AGENT_RELEASE_PUBKEY`) and serves `install.sh` and the binaries.
-- Not yet: RPM databases inside images (`rpmdb.sqlite`), `UPGRADE_AGENT` / `ROTATE_KEY`, `embedded` / `ecs` modes.
+- RPM databases are read without `rpm` (`inventory/rpmdb`, pure Rust, bounded): SQLite (`rpmdb.sqlite`) and Berkeley DB hash (`Packages`); each header becomes the line `rpm -qa --qf RPM_QUERY_FORMAT` prints, read by `os::rpm`. Tested against the real databases of `rockylinux:9-minimal` and `rockylinux:8-minimal` (compressed) and the `rpm -qa` output of those images. SUSE's ndb is not read.
+- The runtime of a path application comes from the PHP-FPM pool its web server passes it to (`inventory/fpm`: pools of Debian, RHEL and Remi, nginx `root` + `fastcgi_pass`, Apache `DocumentRoot` + `SetHandler proxy:` / `ProxyPassMatch fcgi:`, files only), else the host's default `php`. `Files::list` and the symbolic links of a `Root` are resolved inside the root.
+- `UPGRADE_AGENT` (host mode, `upgrade.rs`): the release downloaded from the console, its `SHA256SUMS` minisign-verified with the embedded key (`Ed` and `ED`), version and SHA-256 checked, kept in `<state>/bin/X.Y.Z/` with the pointer `bin/current`; the agent then `exec`s it. At each start, `run` verifies a newer installed release again before executing it (`DEPVERIFY_AGENT_REEXEC` stops a second look).
+- Not yet: `ROTATE_KEY` / `ROTATE_CONSOLE_KEY`, `embedded` / `ecs` modes.
 
 ## End-to-end test against a local console
 

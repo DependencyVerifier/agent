@@ -7,11 +7,13 @@ pub mod containers;
 pub mod discovery;
 pub mod facts;
 pub mod files;
+pub mod fpm;
 pub mod node;
 pub mod os;
 pub mod osrelease;
 pub mod php;
 pub mod purl;
+pub mod rpmdb;
 pub mod runtimes;
 pub mod sbom;
 

@@ -7,7 +7,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use super::files::{Files, Memory, Root};
-use super::{Document, apps, containers, discovery, facts, os, runtimes, sbom};
+use super::{Document, apps, containers, discovery, facts, fpm, os, runtimes, sbom};
 use crate::config::{Config, Mode, Scope};
 use crate::docker::Docker;
 use crate::state::CollectConfig;
@@ -154,6 +154,7 @@ pub fn collect(
                 .and_then(|r| r["version"].as_str())
                 .map(str::to_owned)
         };
+        let served = fpm::served(root);
         for found in discovery::discover(root, collect) {
             let app = apps::catalog(root, &found.path);
             if app.is_empty() && !found.declared {
@@ -161,6 +162,11 @@ pub fn collect(
             }
             let key = format!("path:{}", found.path);
             let mut fields = json!({"subject_key": key, "kind": "path", "path": found.path, "origin": if found.declared { "declared" } else { "discovered" }});
+            // The pool its web server passes it to, else the default `php` (or `node`) of the host.
+            let served_by = app
+                .php
+                .then(|| fpm::runtime_for(&found.path, &served, &host_runtimes))
+                .flatten();
             let runtime = if app.php {
                 version_of("php").map(|v| ("php", v))
             } else if app.node {
@@ -168,7 +174,9 @@ pub fn collect(
             } else {
                 None
             };
-            if let Some((name, version)) = runtime {
+            if let Some(runtime) = served_by {
+                fields["runtime"] = runtime;
+            } else if let Some((name, version)) = runtime {
                 fields["runtime"] = json!({"name": name, "version": version});
             }
             if let Some(requires) = app.requires_field() {

@@ -394,15 +394,32 @@ pub fn image_packages(files: &Memory) -> Vec<Package> {
     if let Some(installed) = super::files::text(files, "/lib/apk/db/installed") {
         packages.extend(os::apk(&installed, &os, "/lib/apk/db/installed"));
     }
+    // The first RPM database found (the new location first), read without `rpm`.
+    if let Some(lines) = RPM_DATABASES
+        .iter()
+        .find_map(|path| files.0.get(&format!("/{path}")))
+        .and_then(|bytes| super::rpmdb::query_lines(bytes))
+    {
+        packages.extend(os::rpm(&lines, &os));
+    }
     packages
 }
+
+/// Where an image keeps its RPM database: SQLite (RHEL 9, Fedora, Amazon Linux 2023), else Berkeley DB (RHEL 7, 8).
+const RPM_DATABASES: [&str; 4] = [
+    "usr/lib/sysimage/rpm/rpmdb.sqlite",
+    "var/lib/rpm/rpmdb.sqlite",
+    "usr/lib/sysimage/rpm/Packages",
+    "var/lib/rpm/Packages",
+];
 
 /// The files kept from the layers of an image.
 fn wanted(path: &str) -> bool {
     matches!(
         path,
         "etc/os-release" | "usr/lib/os-release" | "var/lib/dpkg/status" | "lib/apk/db/installed"
-    ) || (path.starts_with("var/lib/dpkg/status.d/") && path.len() > 23)
+    ) || RPM_DATABASES.contains(&path)
+        || (path.starts_with("var/lib/dpkg/status.d/") && path.len() > 23)
 }
 
 fn concerns(target: &str) -> bool {
@@ -412,6 +429,10 @@ fn concerns(target: &str) -> bool {
         "var/lib/dpkg/status",
         "lib/apk/db/installed",
         "var/lib/dpkg/status.d",
+        "usr/lib/sysimage/rpm/rpmdb.sqlite",
+        "var/lib/rpm/rpmdb.sqlite",
+        "usr/lib/sysimage/rpm/Packages",
+        "var/lib/rpm/Packages",
     ]
     .iter()
     .any(|w| w.starts_with(target) || target.starts_with(w))
@@ -697,6 +718,59 @@ mod tests {
             builder.append_data(&mut header, path, *bytes).unwrap();
         }
         builder.into_inner().unwrap()
+    }
+
+    #[test]
+    fn reads_the_rpm_database_of_an_image() {
+        use std::io::Read;
+        let mut sqlite = Vec::new();
+        flate2::read::GzDecoder::new(
+            std::fs::File::open(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/rpmdb/rocky9-rpmdb.sqlite.gz"
+            ))
+            .unwrap(),
+        )
+        .read_to_end(&mut sqlite)
+        .unwrap();
+        assert!(wanted("var/lib/rpm/rpmdb.sqlite") && wanted("usr/lib/sysimage/rpm/Packages"));
+        assert!(!wanted("var/lib/rpm/Basenames"));
+        assert!(concerns("var/lib/rpm") && concerns("usr/lib/sysimage"));
+
+        let mut files = Memory::default();
+        files.0.insert(
+            "/etc/os-release".into(),
+            b"ID=\"rocky\"\nVERSION_ID=\"9.3\"\n".to_vec(),
+        );
+        files.0.insert("/var/lib/rpm/rpmdb.sqlite".into(), sqlite);
+        let packages = image_packages(&files);
+        assert_eq!(
+            packages.len(),
+            118,
+            "Every package of rockylinux:9-minimal."
+        );
+        let openssl = packages.iter().find(|p| p.name == "openssl-libs").unwrap();
+        assert!(
+            openssl.purl.starts_with("pkg:rpm/rocky/openssl-libs@"),
+            "{}",
+            openssl.purl
+        );
+        assert!(
+            openssl.purl.contains("distro=rocky-9&")
+                && openssl.purl.contains("epoch=1")
+                && openssl.purl.contains("upstream=openssl"),
+            "{}",
+            openssl.purl
+        );
+
+        files.0.insert(
+            "/var/lib/rpm/rpmdb.sqlite".into(),
+            b"not a database".to_vec(),
+        );
+        assert!(
+            image_packages(&files).is_empty(),
+            "A damaged database: nothing, never a guess."
+        );
     }
 
     #[test]

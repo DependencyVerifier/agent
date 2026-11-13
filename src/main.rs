@@ -12,9 +12,11 @@ mod inventory;
 mod jcs;
 mod keys;
 mod orders;
+mod release;
 mod signing;
 mod state;
 mod time;
+mod upgrade;
 
 use std::process::ExitCode;
 
@@ -66,6 +68,18 @@ fn main() -> ExitCode {
                 Ok(config) => config,
                 Err(e) => return fail(&e),
             };
+            // A newer release installed by UPGRADE_AGENT runs instead, once verified again with the embedded key.
+            if command == "run" && std::env::var_os(upgrade::REEXEC).is_none() {
+                if let Some(path) = upgrade::installed(
+                    &config.state_dir,
+                    &release::ReleaseKey::embedded(),
+                    env!("CARGO_PKG_VERSION"),
+                ) {
+                    log!("running the installed release {}", path.display());
+                    let error = upgrade::exec(&path);
+                    log!("could not run {}: {error}", path.display());
+                }
+            }
             let mut agent = match agent::Agent::new(config) {
                 Ok(agent) => agent,
                 Err(e) => return fail(&e),
