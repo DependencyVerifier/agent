@@ -53,7 +53,11 @@ impl Context {
     }
 }
 
-/// The OS packages under a root: dpkg, apk, and in host mode the fixed `rpm -qa` command.
+/// Searched for applications in embedded mode besides the configured roots: where images usually keep them.
+const EMBEDDED_ROOTS: [&str; 2] = ["/app", "/usr/src/app"];
+
+/// The OS packages under a root: dpkg, apk, and rpm through the fixed `rpm -qa` command in host mode, else (embedded
+/// mode, a mounted host) its database read without `rpm`.
 fn host_packages(root: &Root, run_rpm: bool) -> Option<Vec<super::Package>> {
     let os = facts::os_release(root);
     let mut packages = Vec::new();
@@ -75,6 +79,15 @@ fn host_packages(root: &Root, run_rpm: bool) -> Option<Vec<super::Package>> {
                 found = true;
                 break;
             }
+        }
+    } else if !run_rpm {
+        if let Some(lines) = containers::RPM_DATABASES
+            .iter()
+            .find_map(|path| root.read(&format!("/{path}")))
+            .and_then(|bytes| super::rpmdb::query_lines(&bytes))
+        {
+            packages.extend(os::rpm(&lines, &os));
+            found = true;
         }
     }
     found.then_some(packages)
@@ -125,7 +138,7 @@ pub fn collect(
         host.kernel = kernel;
     }
 
-    let host_runtimes = if config.mode == Mode::Host {
+    let host_runtimes = if matches!(config.mode, Mode::Host | Mode::Embedded) {
         runtimes::collect()
     } else {
         vec![]
@@ -145,8 +158,17 @@ pub fn collect(
             ));
         }
     }
-    if config.mode == Mode::Host {
-        let root = root.as_ref().expect("host mode reads the host");
+    if matches!(config.mode, Mode::Host | Mode::Embedded) {
+        let root = root
+            .as_ref()
+            .expect("host and embedded modes read their file system");
+        let mut collect = collect.clone();
+        if config.mode == Mode::Embedded {
+            collect
+                .discovery_roots
+                .extend(EMBEDDED_ROOTS.iter().map(|r| (*r).to_owned()));
+        }
+        let collect = &collect;
         let version_of = |name: &str| {
             host_runtimes
                 .iter()
@@ -238,4 +260,46 @@ pub fn image_set(context: &Context, config: &Config) -> Option<BTreeSet<String>>
             .map(|c| c.image_id)
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn reads_the_rpm_database_of_its_own_file_system_without_rpm() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixtures = format!("{}/tests/fixtures", env!("CARGO_MANIFEST_DIR"));
+        std::fs::create_dir_all(dir.path().join("etc")).unwrap();
+        std::fs::create_dir_all(dir.path().join("usr/lib/sysimage/rpm")).unwrap();
+        std::fs::copy(
+            format!("{fixtures}/os-release-sles156"),
+            dir.path().join("etc/os-release"),
+        )
+        .unwrap();
+        let mut database = Vec::new();
+        flate2::read::GzDecoder::new(
+            std::fs::File::open(format!("{fixtures}/rpmdb/sles156-Packages.db.gz")).unwrap(),
+        )
+        .read_to_end(&mut database)
+        .unwrap();
+        std::fs::write(
+            dir.path().join("usr/lib/sysimage/rpm/Packages.db"),
+            database,
+        )
+        .unwrap();
+
+        let packages = host_packages(&Root(dir.path().to_owned()), false).unwrap();
+        assert_eq!(
+            packages.len(),
+            138,
+            "The packages of bci-base:15.6, as an embedded agent sees them."
+        );
+        assert!(packages.iter().all(|p| p.purl.contains("distro=sles-15.6")));
+        assert!(
+            host_packages(&Root(dir.path().join("nothing")), false).is_none(),
+            "No package database."
+        );
+    }
 }

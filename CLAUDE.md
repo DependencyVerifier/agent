@@ -4,7 +4,7 @@ Rust binary `depverify-agent`, licensed **Apache-2.0**. One binary for every dep
 
 > **Spec and design** live in the [`DependencyVerifier/.github`](https://github.com/DependencyVerifier/.github) repository: `docs/cadrage.md` (spec, French), `docs/design.md` (UI charter), `docs/brand/` (logo, social images). Any `docs/…` path in this repository refers to that repository.
 
-**Read first:** `docs/cadrage.md` §6 (distribution, install trust chain, enrollment, protocol, orders, what is collected, privileges) and §6bis (containers, `AGENT_SCOPE`, `dev.depverify.*` labels). MVP modes: `host` and `container` only.
+**Read first:** `docs/cadrage.md` §6 (distribution, install trust chain, enrollment, protocol, orders, what is collected, privileges) and §6bis (containers, `AGENT_SCOPE`, `dev.depverify.*` labels). Modes: `host`, `container` and `embedded` (`ecs` later).
 
 ## Commands (always through Docker, from the repository root)
 
@@ -46,7 +46,8 @@ Docker access in `container` mode: the agent **never mounts the Docker socket** 
 - The runtime of a path application comes from the PHP-FPM pool its web server passes it to (`inventory/fpm`: pools of Debian, RHEL and Remi, nginx `root` + `fastcgi_pass`, Apache `DocumentRoot` + `SetHandler proxy:` / `ProxyPassMatch fcgi:`, files only), else the host's default `php`. `Files::list` and the symbolic links of a `Root` are resolved inside the root.
 - `UPGRADE_AGENT` (host mode, `upgrade.rs`): the release downloaded from the console, its `SHA256SUMS` minisign-verified with the embedded key (`Ed` and `ED`), version and SHA-256 checked, kept in `<state>/bin/X.Y.Z/` with the pointer `bin/current`; the agent then `exec`s it. At each start, `run` verifies a newer installed release again before executing it (`DEPVERIFY_AGENT_REEXEC` stops a second look).
 - `ROTATE_KEY`: a new key written to `agent.key.next`, announced by `POST /agent/v1/key-rotations` (signed by the current key, with a proof signed by the new one), then promoted; the old key stays as `agent.key.previous` until a request with the new one succeeds (an `invalid_signature` brings it back; a `next` key left at start is tried first). `ROTATE_CONSOLE_KEY`: the new console key is kept in `state.json` (`console_key`) and prevails over `AGENT_CONSOLE_PUBKEY`.
-- Not yet: `embedded` / `ecs` modes.
+- `embedded` (`AGENT_MODE=embedded`, inside the application's image): its own file system as root (`/`), no Docker, no scope; host facts, OS packages (rpm read by `inventory/rpmdb`, never the `rpm` command), runtimes of the fixed list, applications of the discovery roots plus `/app` and `/usr/src/app`; state in `/var/lib/agent` (a volume, else a new agent at each recreation); `UPGRADE_AGENT` refused (it follows the image).
+- Not yet: `ecs` mode.
 
 ## End-to-end test against a local console
 

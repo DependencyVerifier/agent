@@ -9,6 +9,8 @@ use crate::keys::ConsoleKey;
 pub enum Mode {
     Host,
     Container,
+    /// Inside the application's own image (§6bis.3): its own file system, no host, no Docker.
+    Embedded,
 }
 
 impl Mode {
@@ -16,6 +18,7 @@ impl Mode {
         match self {
             Mode::Host => "host",
             Mode::Container => "container",
+            Mode::Embedded => "embedded",
         }
     }
 }
@@ -104,14 +107,15 @@ impl Config {
         let mode = match var("AGENT_MODE").as_deref().unwrap_or("host") {
             "host" => Mode::Host,
             "container" => Mode::Container,
+            "embedded" => Mode::Embedded,
             other => {
                 return Err(format!(
-                    "AGENT_MODE {other} is not supported (host or container)"
+                    "AGENT_MODE {other} is not supported (host, container or embedded)"
                 ));
             }
         };
         let scope = match mode {
-            Mode::Host => None,
+            Mode::Host | Mode::Embedded => None,
             Mode::Container => Some(match var("AGENT_SCOPE").as_deref().unwrap_or("compose") {
                 "compose" => Scope::Compose,
                 "labeled" => Scope::Labeled,
@@ -125,7 +129,7 @@ impl Config {
         };
         let state_dir = PathBuf::from(var("AGENT_STATE_DIR").unwrap_or_else(|| match mode {
             Mode::Host => "/var/lib/depverify-agent".into(),
-            Mode::Container => "/var/lib/agent".into(),
+            Mode::Container | Mode::Embedded => "/var/lib/agent".into(),
         }));
         let docker_host = match mode {
             Mode::Container => Some(
@@ -133,6 +137,7 @@ impl Config {
                     .or_else(|| var("DOCKER_HOST"))
                     .unwrap_or_else(|| "tcp://depverify-docker-proxy:2375".into()),
             ),
+            Mode::Embedded => None,
             Mode::Host => {
                 if matches!(var("AGENT_DOCKER").as_deref(), Some("1" | "true" | "yes")) {
                     Some(
@@ -146,7 +151,7 @@ impl Config {
             }
         };
         let host_root = match (mode, scope) {
-            (Mode::Host, _) => Some(PathBuf::from(
+            (Mode::Host | Mode::Embedded, _) => Some(PathBuf::from(
                 var("AGENT_HOST_ROOT").unwrap_or_else(|| "/".into()),
             )),
             (Mode::Container, Some(Scope::Host)) => {

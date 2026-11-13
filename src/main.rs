@@ -25,7 +25,7 @@ use agent::log;
 const USAGE: &str = "usage: depverify-agent [run | enroll | fingerprint | inventory --dry-run | version]
 
 Settings come from the environment: AGENT_CONSOLE_URL, AGENT_CONSOLE_PUBKEY, AGENT_TOKEN or AGENT_TOKEN_FILE,
-AGENT_MODE (host, container), AGENT_SCOPE (compose, labeled, host), AGENT_STATE_DIR, AGENT_DOCKER (host mode),
+AGENT_MODE (host, container, embedded), AGENT_SCOPE (compose, labeled, host), AGENT_STATE_DIR, AGENT_DOCKER (host mode),
 AGENT_DOCKER_HOST, AGENT_HOST_ROOT, AGENT_COMPOSE_PROJECT, AGENT_CA_FILE.";
 
 /// A stop the service manager must not restart in a loop (systemd: `RestartPreventExitStatus=3`).
