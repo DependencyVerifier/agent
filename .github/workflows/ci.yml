@@ -51,4 +51,4 @@ jobs:
       # The agent ships as one static binary (scratch image, curl | sh install).
       - name: Check the binary is static
         run: file target/release/depverify-agent | tee /dev/stderr | grep -q 'static'
-      - run: ./target/release/depverify-agent
+      - run: ./target/release/depverify-agent version
