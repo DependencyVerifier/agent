@@ -12,7 +12,9 @@ use crate::client::{Body, Console, Failure};
 use crate::config::{Config, Mode, Scope};
 use crate::inventory::collect::{self, Context};
 use crate::inventory::{Document, facts};
-use crate::keys::AgentKey;
+use base64::Engine;
+
+use crate::keys::{AgentKey, ConsoleKey};
 use crate::orders::{self, Order};
 use crate::state::{OrderResult, State, Store};
 use crate::time;
@@ -57,10 +59,21 @@ fn sleep(seconds: u64) {
 }
 
 impl Agent {
-    pub fn new(config: Config) -> Result<Self, String> {
+    pub fn new(mut config: Config) -> Result<Self, String> {
         let store = Store::open(&config.state_dir)?;
-        let key = store.key()?;
         let state = store.load()?;
+        // A rotation interrupted after the new key was written: try it, the previous one stays at hand.
+        let key = match store.next_key() {
+            Some(_) => {
+                log!("using the new key of an interrupted rotation");
+                store.promote_next()?
+            }
+            None => store.key()?,
+        };
+        // A console key rotated by order prevails over the one of the installation.
+        if let Some(pinned) = &state.console_key {
+            config.console_key = ConsoleKey::parse(pinned)?;
+        }
         let console = Console::new(
             &config.console_url,
             config.ca_file.as_deref(),
@@ -222,7 +235,13 @@ impl Agent {
             match self.poll() {
                 Ok(next) => {
                     backoff = 30;
+                    self.store.forget_previous();
                     sleep(next);
+                }
+                Err(Failure::Problem { code, .. })
+                    if code == "invalid_signature" && self.restore_previous() =>
+                {
+                    log!("the console does not know the new key: back to the previous one");
                 }
                 Err(Failure::Problem { code, .. })
                     if matches!(code.as_str(), "agent_revoked" | "unknown_agent") =>
@@ -309,6 +328,26 @@ impl Agent {
                     }
                     ("executed", None)
                 }
+                Ok(Order::RotateKey) => match self.rotate_key(&checked.order_id) {
+                    Ok(fingerprint) => {
+                        log!("new key in use, fingerprint {fingerprint}");
+                        ("executed", None)
+                    }
+                    Err(reason) => {
+                        log!("key rotation failed: {reason}");
+                        ("failed", Some(reason))
+                    }
+                },
+                Ok(Order::RotateConsoleKey(key)) => {
+                    let console_key = ConsoleKey::parse(&key).expect("checked with the order");
+                    log!(
+                        "console key pinned from now on: {}",
+                        console_key.fingerprint()
+                    );
+                    self.config.console_key = console_key;
+                    self.state.console_key = Some(key);
+                    ("executed", None)
+                }
                 Ok(Order::UpgradeAgent(version)) => match self.upgrade(&version) {
                     Ok(path) => {
                         log!("version {version} verified and installed");
@@ -386,6 +425,55 @@ impl Agent {
         }
         // A finished SCAN_NOW is reported at once (§6.2).
         Ok(if scan_now { 30 } else { next })
+    }
+
+    fn restore_previous(&mut self) -> bool {
+        match self.store.restore_previous() {
+            Some(previous) => {
+                self.key = previous;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `ROTATE_KEY`: a new key pair, written first, announced to the console in a request signed by the current key
+    /// with a proof that the new one signs (§5.3), then used. The fingerprint of the new key.
+    fn rotate_key(&mut self, order_id: &str) -> Result<String, &'static str> {
+        let next = AgentKey::generate();
+        self.store
+            .write_next(&next)
+            .map_err(|_| "key_not_written")?;
+        let public = next.public_text();
+        let proof = proof_message(
+            self.state.agent_id.as_deref().unwrap_or(""),
+            order_id,
+            &public,
+        );
+        let body = serde_json::to_vec(&json!({
+            "protocol_version": 1,
+            "order_id": order_id,
+            "new_public_key": public,
+            "proof": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(next.sign(proof.as_bytes())),
+        }))
+        .expect("serializable");
+        let sent = self.console.send(
+            &self.key,
+            "POST",
+            "/agent/v1/key-rotations",
+            Some(Body {
+                bytes: &body,
+                content_type: "application/json",
+                gzip: false,
+            }),
+        );
+        if let Err(failure) = sent {
+            log!("key rotation refused: {failure}");
+            self.store.discard_next();
+            return Err("rotation_refused");
+        }
+        self.key = self.store.promote_next().map_err(|_| "key_not_written")?;
+        Ok(self.key.fingerprint())
     }
 
     /// `UPGRADE_AGENT`: host mode only, a newer version, its release downloaded from the console and verified with
@@ -590,6 +678,11 @@ pub fn dry_run(
         })
         .collect();
     Ok(json!({"host_facts": facts, "subjects": subjects}))
+}
+
+/// What the new key signs to prove it belongs to the agent rotating it (protocol §5.3).
+pub fn proof_message(agent_id: &str, order_id: &str, new_public_key: &str) -> String {
+    format!("depverify-key-rotation-v1\n{agent_id}\n{order_id}\n{new_public_key}")
 }
 
 #[cfg(test)]

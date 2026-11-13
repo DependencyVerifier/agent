@@ -44,7 +44,8 @@ Docker access in `container` mode: the agent **never mounts the Docker socket** 
 - RPM databases are read without `rpm` (`inventory/rpmdb`, pure Rust, bounded): SQLite (`rpmdb.sqlite`) and Berkeley DB hash (`Packages`); each header becomes the line `rpm -qa --qf RPM_QUERY_FORMAT` prints, read by `os::rpm`. Tested against the real databases of `rockylinux:9-minimal` and `rockylinux:8-minimal` (compressed) and the `rpm -qa` output of those images. SUSE's ndb is not read.
 - The runtime of a path application comes from the PHP-FPM pool its web server passes it to (`inventory/fpm`: pools of Debian, RHEL and Remi, nginx `root` + `fastcgi_pass`, Apache `DocumentRoot` + `SetHandler proxy:` / `ProxyPassMatch fcgi:`, files only), else the host's default `php`. `Files::list` and the symbolic links of a `Root` are resolved inside the root.
 - `UPGRADE_AGENT` (host mode, `upgrade.rs`): the release downloaded from the console, its `SHA256SUMS` minisign-verified with the embedded key (`Ed` and `ED`), version and SHA-256 checked, kept in `<state>/bin/X.Y.Z/` with the pointer `bin/current`; the agent then `exec`s it. At each start, `run` verifies a newer installed release again before executing it (`DEPVERIFY_AGENT_REEXEC` stops a second look).
-- Not yet: `ROTATE_KEY` / `ROTATE_CONSOLE_KEY`, `embedded` / `ecs` modes.
+- `ROTATE_KEY`: a new key written to `agent.key.next`, announced by `POST /agent/v1/key-rotations` (signed by the current key, with a proof signed by the new one), then promoted; the old key stays as `agent.key.previous` until a request with the new one succeeds (an `invalid_signature` brings it back; a `next` key left at start is tried first). `ROTATE_CONSOLE_KEY`: the new console key is kept in `state.json` (`console_key`) and prevails over `AGENT_CONSOLE_PUBKEY`.
+- Not yet: `embedded` / `ecs` modes.
 
 ## End-to-end test against a local console
 

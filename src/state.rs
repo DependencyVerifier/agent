@@ -57,6 +57,9 @@ pub struct State {
     pub pending_results: Vec<OrderResult>,
     #[serde(default)]
     pub last_scan: Option<i64>,
+    /// The console key pinned by a `ROTATE_CONSOLE_KEY` order; it prevails over `AGENT_CONSOLE_PUBKEY`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub console_key: Option<String>,
 }
 
 pub struct Store {
@@ -91,6 +94,60 @@ impl Store {
             }
             Err(e) => Err(format!("{}: {e}", path.display())),
         }
+    }
+
+    fn read_key(path: &Path) -> Option<AgentKey> {
+        let seed: [u8; 32] = STANDARD
+            .decode(fs::read_to_string(path).ok()?.trim())
+            .ok()?
+            .try_into()
+            .ok()?;
+        Some(AgentKey::from_seed(seed))
+    }
+
+    /// `ROTATE_KEY`: the new key, written before the console is told (`agent.key.next`).
+    pub fn write_next(&self, key: &AgentKey) -> Result<(), String> {
+        write_private(
+            &self.dir.join("agent.key.next"),
+            STANDARD.encode(key.seed()).as_bytes(),
+        )
+    }
+
+    /// A new key left by an interrupted rotation.
+    pub fn next_key(&self) -> Option<AgentKey> {
+        Self::read_key(&self.dir.join("agent.key.next"))
+    }
+
+    pub fn discard_next(&self) {
+        let _ = fs::remove_file(self.dir.join("agent.key.next"));
+    }
+
+    /// The new key becomes the key; the old one is kept (`agent.key.previous`) until the console accepts the new one.
+    pub fn promote_next(&self) -> Result<AgentKey, String> {
+        let next = self.next_key().ok_or("no new key to use")?;
+        let (key, previous) = (
+            self.dir.join("agent.key"),
+            self.dir.join("agent.key.previous"),
+        );
+        fs::rename(&key, &previous).map_err(|e| e.to_string())?;
+        fs::rename(self.dir.join("agent.key.next"), &key).map_err(|e| e.to_string())?;
+        Ok(next)
+    }
+
+    /// The console refuses the new key (the rotation never reached it): back to the previous one.
+    pub fn restore_previous(&self) -> Option<AgentKey> {
+        let previous = Self::read_key(&self.dir.join("agent.key.previous"))?;
+        fs::rename(
+            self.dir.join("agent.key.previous"),
+            self.dir.join("agent.key"),
+        )
+        .ok()?;
+        Some(previous)
+    }
+
+    /// The console accepted the key in use: the previous one is gone for good.
+    pub fn forget_previous(&self) {
+        let _ = fs::remove_file(self.dir.join("agent.key.previous"));
     }
 
     pub fn load(&self) -> Result<State, String> {
@@ -145,6 +202,61 @@ const O_NOFOLLOW: i32 = if cfg!(target_arch = "aarch64") {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotates_the_key_and_keeps_the_previous_one_until_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let old = store.key().unwrap();
+        assert!(store.next_key().is_none() && store.restore_previous().is_none());
+        assert!(store.promote_next().is_err(), "No new key.");
+
+        let next = AgentKey::generate();
+        store.write_next(&next).unwrap();
+        assert_eq!(store.next_key().unwrap().fingerprint(), next.fingerprint());
+        assert_eq!(
+            store.promote_next().unwrap().fingerprint(),
+            next.fingerprint()
+        );
+        assert_eq!(store.key().unwrap().fingerprint(), next.fingerprint());
+        assert!(store.next_key().is_none());
+        let mode = fs::metadata(dir.path().join("agent.key"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        assert_eq!(
+            store.restore_previous().unwrap().fingerprint(),
+            old.fingerprint(),
+            "Refused: back to the old key."
+        );
+        assert_eq!(store.key().unwrap().fingerprint(), old.fingerprint());
+        store.write_next(&next).unwrap();
+        store.promote_next().unwrap();
+        store.forget_previous();
+        assert!(
+            store.restore_previous().is_none(),
+            "Confirmed: no way back."
+        );
+        store.write_next(&AgentKey::generate()).unwrap();
+        store.discard_next();
+        assert!(store.next_key().is_none());
+
+        let state = State {
+            console_key: Some("ed25519:11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=".into()),
+            ..State::default()
+        };
+        store.save(&state).unwrap();
+        assert_eq!(store.load().unwrap().console_key, state.console_key);
+        assert!(
+            !serde_json::to_string(&State::default())
+                .unwrap()
+                .contains("console_key"),
+            "Absent until rotated."
+        );
+    }
 
     #[test]
     fn keeps_the_key_and_the_state_private_across_restarts() {

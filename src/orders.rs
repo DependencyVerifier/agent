@@ -15,6 +15,10 @@ pub enum Order {
     SetConfig(CollectConfig),
     /// The version to run (host mode), verified with the release key embedded in the agent.
     UpgradeAgent(String),
+    /// A new key pair for the agent.
+    RotateKey,
+    /// The console key to pin from now on (`ed25519:…`), announced in an order signed by the current one.
+    RotateConsoleKey(String),
 }
 
 pub struct Checked {
@@ -98,6 +102,19 @@ fn verify(
             .ok_or("invalid_payload"),
         Some("SET_CONFIG") => set_config(payload)
             .map(Order::SetConfig)
+            .ok_or("invalid_payload"),
+        Some("ROTATE_KEY") => payload
+            .as_object()
+            .filter(|o| o.is_empty())
+            .map(|_| Order::RotateKey)
+            .ok_or("invalid_payload"),
+        Some("ROTATE_CONSOLE_KEY") => payload
+            .get("new_key")
+            .and_then(Value::as_str)
+            .filter(|k| {
+                ConsoleKey::parse(k).is_ok() && payload.as_object().is_some_and(|o| o.len() == 1)
+            })
+            .map(|k| Order::RotateConsoleKey(k.to_owned()))
             .ok_or("invalid_payload"),
         Some("UPGRADE_AGENT") => payload
             .get("version")
@@ -317,6 +334,38 @@ mod tests {
             .outcome,
             Err("unknown_type")
         );
+    }
+
+    #[test]
+    fn reads_the_rotation_orders() {
+        let (_, console, mut state, now) = setup();
+        let mut outcome = |kind: &str, payload: Value| {
+            check(&signed(kind, payload), &console, &mut state, now).outcome
+        };
+        assert_eq!(
+            outcome("ROTATE_KEY", serde_json::json!({})),
+            Ok(Order::RotateKey)
+        );
+        assert_eq!(
+            outcome("ROTATE_KEY", serde_json::json!({"seed": "x"})),
+            Err("invalid_payload")
+        );
+        let key = "ed25519:11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=";
+        assert_eq!(
+            outcome("ROTATE_CONSOLE_KEY", serde_json::json!({"new_key": key})),
+            Ok(Order::RotateConsoleKey(key.into()))
+        );
+        for payload in [
+            serde_json::json!({"new_key": "ed25519:short"}),
+            serde_json::json!({}),
+            serde_json::json!({"new_key": key, "also": 1}),
+        ] {
+            assert_eq!(
+                outcome("ROTATE_CONSOLE_KEY", payload.clone()),
+                Err("invalid_payload"),
+                "{payload}"
+            );
+        }
     }
 
     #[test]
