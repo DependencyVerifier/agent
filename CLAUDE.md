@@ -40,7 +40,8 @@ Docker access in `container` mode: the agent **never mounts the Docker socket** 
 - Modules: `config` (env only), `state` (state dir, atomic 0600 writes), `keys`, `signing` (§4, vector test), `jcs` (RFC 8785), `orders` (§7.2 in order, vector test), `client` (signed requests, clock offset, one retry on `clock_skew` / `invalid_signature` / `replayed_request`), `agent` (enroll, poll loop, inventory send, §9 reactions; exit status 3 = stopped for good), `inventory::{osrelease, purl, os, php, node, apps, discovery, runtimes, facts, containers, sbom, collect}`.
 - Determinism: SBOMs and host facts are `serde_json` values with sorted keys, components sorted by purl, no timestamp: an unchanged machine re-uploads nothing.
 - Containers: the scope filter (`containers::in_scope`) runs on the container list **before** any inspect or file read (tested). Application files come from `GET /containers/{id}/archive` (label paths, else the working directory and usual places); image OS packages from `GET /images/{id}/get`, layers streamed (legacy and OCI layouts, gzip or not), whiteouts applied, cached per image id and agent version in `<state>/images/`.
-- Not yet: RPM databases inside images (`rpmdb.sqlite`), `UPGRADE_AGENT` / `ROTATE_KEY`, `embedded` / `ecs` modes, the console-served `install.sh` and signed releases.
+- Releases: a tag `vX.Y.Z` runs `.github/workflows/release.yml` (both architectures with `cargo-zigbuild` 0.24 / zig 0.17, `SHA256SUMS` signed with minisign, GitHub release). The console verifies them (`AGENT_RELEASE_PUBKEY`) and serves `install.sh` and the binaries.
+- Not yet: RPM databases inside images (`rpmdb.sqlite`), `UPGRADE_AGENT` / `ROTATE_KEY`, `embedded` / `ecs` modes.
 
 ## End-to-end test against a local console
 

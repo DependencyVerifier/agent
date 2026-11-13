@@ -1,0 +1,70 @@
+name: Release
+
+# A tag `vX.Y.Z` (the version of Cargo.toml) publishes a GitHub release: the static binaries of both architectures,
+# `SHA256SUMS`, and `SHA256SUMS.minisig` signed with the project release key (cadrage §6, install trust chain). The
+# consoles verify that signature before serving a binary (`make agent-release-sync`).
+#
+# Secret `MINISIGN_SECRET_KEY`: the content of the key file made with `minisign -G -W` (no password; the secret
+# store protects it). Its public key is the `AGENT_RELEASE_PUBKEY` of every console.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, sign and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the tag is the crate version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          test "${GITHUB_REF_NAME}" = "v${version}" || { echo "tag ${GITHUB_REF_NAME} is not v${version}"; exit 1; }
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Install the toolchains
+        run: |
+          rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+          pip install --quiet --break-system-packages 'ziglang==0.17.1' 'cargo-zigbuild==0.24.1'
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign file
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build the static binaries
+        run: |
+          mkdir dist
+          for arch in x86_64 aarch64; do
+            cargo zigbuild --release --locked --target "${arch}-unknown-linux-musl"
+            cp "target/${arch}-unknown-linux-musl/release/depverify-agent" "dist/depverify-agent-${arch}-linux"
+            file "dist/depverify-agent-${arch}-linux" | tee /dev/stderr | grep -q 'statically linked'
+          done
+          ./dist/depverify-agent-x86_64-linux version
+
+      - name: Checksums, signed with the project release key
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          cd dist
+          sha256sum depverify-agent-x86_64-linux depverify-agent-aarch64-linux > SHA256SUMS
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/release.key"
+          minisign -S -s "$RUNNER_TEMP/release.key" -m SHA256SUMS -t "depverify-agent ${VERSION}"
+          rm -f "$RUNNER_TEMP/release.key"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --title "${GITHUB_REF_NAME}" --notes "Verify with minisign -Vm SHA256SUMS -P <project release key>, then sha256sum -c SHA256SUMS."

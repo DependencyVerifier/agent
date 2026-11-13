@@ -23,6 +23,17 @@ Never a shell, never a command or path received from the network outside the clo
 
 ## Host mode (systemd)
 
+The console serves an installer once it holds a verified release (`make agent-release-sync` there): the Enrollment
+dialog gives the command, for example
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL https://console.example.com/install.sh | sudo AGENT_TOKEN='dvet_…' sh
+```
+
+It downloads the binary of the host's architecture from the console, checks its SHA-256 (from a release whose
+checksums the console verified with the project release key), creates the user, the settings and the unit below,
+and starts the agent. By hand:
+
 ```bash
 install -m 0755 depverify-agent /usr/local/bin/
 useradd --system --no-create-home --shell /usr/sbin/nologin depverify-agent
@@ -74,6 +85,23 @@ docker run --rm -v "$PWD":/work -w /work rust:1 sh -c 'rustup component add clip
 The signatures reproduce the protocol test vectors byte for byte (`signing.rs`, `orders.rs`); the catalogers are
 tested against real files (`tests/fixtures`: dpkg, apk and rpm databases of official images, Composer and Node
 lockfiles).
+
+## Releases
+
+A tag `vX.Y.Z` (the version of `Cargo.toml`) runs `.github/workflows/release.yml`: static binaries for x86_64 and
+aarch64 (`cargo-zigbuild`), `SHA256SUMS` signed with minisign by the project release key (secret
+`MINISIGN_SECRET_KEY`, made once with `minisign -G -W`), published as a GitHub release. Every console holds the public
+key as `AGENT_RELEASE_PUBKEY` and serves only what it verified.
+
+Project release key (minisign, key id `EBDDB456A4BF3356`):
+
+```
+RWRWM7+kVrTd63TMnDIUOLjb78MC3QJTImbW3Gi/8ooaxK7iF2tC/ZSz
+```
+
+```bash
+minisign -Vm SHA256SUMS -P RWRWM7+kVrTd63TMnDIUOLjb78MC3QJTImbW3Gi/8ooaxK7iF2tC/ZSz && sha256sum -c SHA256SUMS
+```
 
 ## Documentation
 
