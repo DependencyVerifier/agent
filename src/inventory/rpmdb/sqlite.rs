@@ -108,11 +108,13 @@ impl<'a> Database<'a> {
         Some(payload)
     }
 
-    /// The payload of every row of a table B-tree, in key order; every page at most once (a loop is a damaged file).
+    /// The payload of every row of a table B-tree, in key order; every page at most once (a loop is a damaged file),
+    /// and never more bytes in all than the file holds (cells of a page pointing to the same bytes).
     fn rows(&self, root: u32) -> Option<Vec<Vec<u8>>> {
         let mut rows = Vec::new();
         let mut stack = vec![root];
         let mut seen = HashSet::new();
+        let mut total = 0usize;
         while let Some(number) = stack.pop() {
             if !seen.insert(number) {
                 return None;
@@ -126,12 +128,12 @@ impl<'a> Database<'a> {
                         let at = be16(page, header + 8 + cell * 2)?;
                         let (size, read) = varint(page, at)?;
                         let (_, key) = varint(page, at + read)?;
-                        rows.push(self.payload(
-                            page,
-                            at + read + key,
-                            usize::try_from(size).ok()?,
-                            &mut seen,
-                        )?);
+                        let size = usize::try_from(size).ok()?;
+                        total = total.checked_add(size)?;
+                        if total > self.bytes.len() {
+                            return None;
+                        }
+                        rows.push(self.payload(page, at + read + key, size, &mut seen)?);
                     }
                 }
                 0x05 => {
@@ -324,6 +326,20 @@ mod tests {
             Database::open(&leaf).unwrap().rows(1),
             None,
             "A payload larger than the file."
+        );
+        let mut repeated = interior(&[2]);
+        // page 2: 400 cells of 8 bytes, all on the same bytes (3200 > the 1536 of the file)
+        repeated[512 + 3..512 + 5].copy_from_slice(&400u16.to_be_bytes());
+        for i in 0..400 {
+            let at = 512 + 8 + i * 2;
+            repeated[at..at + 2].copy_from_slice(&480u16.to_be_bytes());
+        }
+        repeated[512 + 480] = 8;
+        repeated[512 + 481] = 1;
+        assert_eq!(
+            Database::open(&repeated).unwrap().rows(1),
+            None,
+            "Cells read more bytes than the file holds."
         );
     }
 

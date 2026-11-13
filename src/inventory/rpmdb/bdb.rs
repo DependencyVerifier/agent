@@ -114,6 +114,8 @@ pub fn values(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
     let database = Database::open(bytes)?;
     let mut values = Vec::new();
     let mut seen = HashSet::new();
+    // Items of a page pointing to the same bytes: never more bytes in all than the file holds.
+    let mut total = 0usize;
     for number in 1..=database.last_page {
         let Some(page) = database.page(number) else {
             break;
@@ -123,7 +125,13 @@ pub fn values(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
         }
         let entries = database.order.u16(page, 20)?;
         for index in (1..entries).step_by(2) {
-            values.extend(database.value(page, index, &mut seen));
+            if let Some(value) = database.value(page, index, &mut seen) {
+                total = total.checked_add(value.len())?;
+                if total > bytes.len() {
+                    return None;
+                }
+                values.push(value);
+            }
         }
     }
     Some(values)
@@ -218,6 +226,19 @@ mod tests {
             values(&huge).unwrap().len(),
             1,
             "A length larger than the file: dropped."
+        );
+        let mut repeated = database();
+        le16(&mut repeated, 512 + 20, 400);
+        for i in 0..400 {
+            // keys at 511, values from 300 to the key before: 210 bytes each, 200 times
+            let at = if i % 2 == 0 { 511 } else { 300 };
+            le16(&mut repeated, 512 + PAGE_HEADER + i * 2, at);
+        }
+        repeated[512 + 300] = KEY_DATA;
+        assert_eq!(
+            values(&repeated),
+            None,
+            "Items read more bytes than the file holds."
         );
         let mut cut = database();
         cut.truncate(1536);
