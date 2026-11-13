@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
+use std::os::unix::fs::DirBuilderExt;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -249,7 +250,7 @@ impl Agent {
 
     /// One poll (§6): the pending results, then the orders received, then an inventory when one is due.
     fn poll(&mut self) -> Result<u64, Failure> {
-        orders::prune(&mut self.state, time::now() + self.console.offset);
+        orders::prune(&mut self.state, time::now());
         let body = json!({
             "protocol_version": 1,
             "agent_version": env!("CARGO_PKG_VERSION"),
@@ -502,9 +503,15 @@ pub fn dry_run(
     collect_config: &crate::state::CollectConfig,
 ) -> Result<Value, String> {
     let context = Context::new(config)?;
-    let cache = std::env::temp_dir().join("depverify-agent-cache");
-    let _ = std::fs::create_dir_all(&cache);
-    let inventory = collect::collect(config, collect_config, &context, &cache)?;
+    // A fresh private directory (created exclusively, 0700): never a shared, predictable path.
+    let cache = std::env::temp_dir().join(format!("depverify-agent-{}", uuid::Uuid::now_v7()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&cache)
+        .map_err(|e| format!("{}: {e}", cache.display()))?;
+    let inventory = collect::collect(config, collect_config, &context, &cache);
+    let _ = std::fs::remove_dir_all(&cache);
+    let inventory = inventory?;
     let facts: Value = serde_json::from_slice(&inventory.facts.bytes).unwrap_or(Value::Null);
     let subjects: Vec<Value> = inventory
         .subjects

@@ -388,7 +388,29 @@ struct Layer {
     opaque: Vec<String>,
 }
 
-fn read_layer(reader: impl Read) -> Option<Layer> {
+/// What an image analysis may keep in memory at most (package databases of every layer), and how many entries it
+/// reads: an image built to exhaust the agent is refused, not followed.
+const IMAGE_BUDGET: u64 = 256 * 1024 * 1024;
+const MAX_ENTRIES: u64 = 2_000_000;
+
+struct Budget {
+    bytes: u64,
+    entries: u64,
+}
+
+impl Budget {
+    fn spend(&mut self, bytes: u64) -> bool {
+        self.entries += 1;
+        self.bytes += bytes;
+        self.within()
+    }
+
+    fn within(&self) -> bool {
+        self.bytes <= IMAGE_BUDGET && self.entries <= MAX_ENTRIES
+    }
+}
+
+fn read_layer(reader: impl Read, budget: &mut Budget) -> Option<Layer> {
     let mut buffered = BufReader::new(reader);
     let gzip = buffered.fill_buf().ok()?.starts_with(&[0x1f, 0x8b]);
     let reader: Box<dyn Read> = if gzip {
@@ -404,6 +426,9 @@ fn read_layer(reader: impl Read) -> Option<Layer> {
             break;
         };
         any = true;
+        if !budget.spend(0) {
+            return None;
+        }
         let Ok(path) = entry.path().map(|p| {
             p.to_string_lossy()
                 .trim_start_matches("./")
@@ -429,6 +454,9 @@ fn read_layer(reader: impl Read) -> Option<Layer> {
         } else if entry.header().entry_type().is_file() && wanted(&path) {
             let mut bytes = Vec::new();
             if (&mut entry).take(MAX_FILE).read_to_end(&mut bytes).is_ok() {
+                if !budget.spend(bytes.len() as u64) {
+                    return None;
+                }
                 layer.files.insert(path, bytes);
             }
         }
@@ -450,6 +478,10 @@ pub fn layers_to_files(export: impl Read) -> Result<Memory, String> {
     let mut archive = tar::Archive::new(export);
     let mut layers: BTreeMap<String, Layer> = BTreeMap::new();
     let mut manifest: Option<Value> = None;
+    let mut budget = Budget {
+        bytes: 0,
+        entries: 0,
+    };
     for entry in archive.entries().map_err(|e| e.to_string())? {
         let mut entry = entry.map_err(|e| e.to_string())?;
         if !entry.header().entry_type().is_file() {
@@ -462,11 +494,17 @@ pub fn layers_to_files(export: impl Read) -> Result<Memory, String> {
             .into_owned();
         if path == "manifest.json" {
             let mut bytes = Vec::new();
-            entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+            (&mut entry)
+                .take(8 * 1024 * 1024)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
             manifest = serde_json::from_slice(&bytes).ok();
         } else if !path.ends_with(".json") && path != "oci-layout" && path != "repositories" {
-            if let Some(layer) = read_layer(&mut entry) {
+            if let Some(layer) = read_layer(&mut entry, &mut budget) {
                 layers.insert(path, layer);
+            }
+            if !budget.within() {
+                return Err("image analysis over its memory budget: skipped".into());
             }
         }
     }
@@ -625,5 +663,15 @@ mod tests {
             "removed by a whiteout"
         );
         assert!(files.0.contains_key("/etc/os-release"));
+
+        let mut budget = Budget {
+            bytes: IMAGE_BUDGET - 3,
+            entries: 0,
+        };
+        let big = tar_of(&[("var/lib/dpkg/status", b"1234")]);
+        assert!(
+            read_layer(std::io::Cursor::new(big), &mut budget).is_none(),
+            "over the budget"
+        );
     }
 }

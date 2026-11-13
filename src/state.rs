@@ -119,11 +119,14 @@ impl Store {
 /// Written to a temporary file then renamed: a crash never leaves half a file. Mode 0600.
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
+    // A leftover (or planted) temporary file is removed, never followed: the new one is created exclusively and
+    // `O_NOFOLLOW` refuses a symbolic link.
+    let _ = fs::remove_file(&tmp);
     let mut file = fs::OpenOptions::new()
-        .create(true)
+        .create_new(true)
         .write(true)
-        .truncate(true)
         .mode(0o600)
+        .custom_flags(O_NOFOLLOW)
         .open(&tmp)
         .map_err(|e| format!("{}: {e}", tmp.display()))?;
     file.write_all(bytes)
@@ -131,6 +134,13 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", tmp.display()))?;
     fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
+
+/// `O_NOFOLLOW` of Linux (x86_64 and aarch64).
+const O_NOFOLLOW: i32 = if cfg!(target_arch = "aarch64") {
+    0o100_000
+} else {
+    0o400_000
+};
 
 #[cfg(test)]
 mod tests {
@@ -157,5 +167,12 @@ mod tests {
         let again = store.load().unwrap();
         assert_eq!(again.agent_id, state.agent_id);
         assert_eq!(again.seen_orders.get("o1"), Some(&42));
+
+        // A planted link in place of the temporary file is replaced, its target left untouched.
+        let target = dir.path().join("elsewhere");
+        fs::write(&target, "keep").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("state.tmp")).unwrap();
+        store.save(&state).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
     }
 }

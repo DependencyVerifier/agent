@@ -133,9 +133,12 @@ fn set_config(payload: &Value) -> Option<CollectConfig> {
     })
 }
 
-/// Forgets the orders past their keeping time.
-pub fn prune(state: &mut State, now: i64) {
-    state.seen_orders.retain(|_, keep_until| *keep_until > now);
+/// Forgets the orders past their keeping time, judged on the **local** clock with the largest offset allowed: no
+/// console clock can make a forgotten order valid again.
+pub fn prune(state: &mut State, local_now: i64) {
+    state
+        .seen_orders
+        .retain(|_, keep_until| *keep_until + crate::client::MAX_OFFSET > local_now);
 }
 
 #[cfg(test)]
@@ -185,6 +188,12 @@ mod tests {
             Err("replayed")
         );
         prune(&mut state, 1_794_212_100 + 601);
+        assert_eq!(
+            state.seen_orders.len(),
+            1,
+            "kept while a console offset could still make it valid"
+        );
+        prune(&mut state, 1_794_212_100 + 601 + crate::client::MAX_OFFSET);
         assert!(state.seen_orders.is_empty());
     }
 

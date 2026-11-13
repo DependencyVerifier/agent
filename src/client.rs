@@ -12,6 +12,16 @@ use crate::signing;
 use crate::time;
 
 /// `depverify-agent/<version> (linux; <arch>)` (§2).
+/// The console clock may differ from the local one by this much at most: an offset beyond is ignored, so that no
+/// answer can move the agent's time far enough to defeat the anti-replay store of the orders.
+pub const MAX_OFFSET: i64 = 3600;
+
+fn bounded(offset: i64) -> Option<i64> {
+    (-MAX_OFFSET..=MAX_OFFSET)
+        .contains(&offset)
+        .then_some(offset)
+}
+
 pub fn user_agent() -> String {
     format!(
         "depverify-agent/{} (linux; {})",
@@ -90,7 +100,7 @@ impl Console {
         Ok(Self {
             base: base.to_owned(),
             http,
-            offset,
+            offset: bounded(offset).unwrap_or(0),
         })
     }
 
@@ -121,7 +131,9 @@ impl Console {
                         .and_then(Value::as_str)
                         .and_then(time::parse_rfc3339)
                     {
-                        self.offset = server - time::now();
+                        if let Some(offset) = bounded(server - time::now()) {
+                            self.offset = offset;
+                        }
                     }
                     retried = true;
                 }
@@ -191,7 +203,9 @@ impl Console {
             .and_then(Value::as_str)
             .and_then(time::parse_rfc3339)
         {
-            self.offset = server - time::now();
+            if let Some(offset) = bounded(server - time::now()) {
+                self.offset = offset;
+            }
         }
         if (200..300).contains(&status) {
             return Ok(Reply { json });
