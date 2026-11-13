@@ -3,10 +3,9 @@
 //! (`Packages (hnum INTEGER PRIMARY KEY, blob BLOB)`); every offset is checked, every walk bounded. The write-ahead log
 //! is not read (an image's database is checkpointed).
 
-pub const MAGIC: &[u8] = b"SQLite format 3\0";
+use std::collections::HashSet;
 
-/// Pages visited at most in one walk (a loop in a damaged file never runs forever).
-const MAX_VISITS: usize = 1 << 20;
+pub const MAGIC: &[u8] = b"SQLite format 3\0";
 
 #[derive(Debug, PartialEq)]
 enum Value {
@@ -71,8 +70,18 @@ impl<'a> Database<'a> {
         self.bytes.get(start..start.checked_add(self.page_size)?)
     }
 
-    /// The payload of a table leaf cell: its local part, then its overflow chain.
-    fn payload(&self, page: &[u8], at: usize, size: usize, visits: &mut usize) -> Option<Vec<u8>> {
+    /// The payload of a table leaf cell: its local part, then its overflow chain. A payload larger than the file, or
+    /// a page already seen in this walk, is a damaged file: nothing is read twice, so a walk reads at most the file.
+    fn payload(
+        &self,
+        page: &[u8],
+        at: usize,
+        size: usize,
+        seen: &mut HashSet<u32>,
+    ) -> Option<Vec<u8>> {
+        if size > self.bytes.len() {
+            return None;
+        }
         let most = self.usable - 35;
         let local = if size <= most {
             size
@@ -88,8 +97,7 @@ impl<'a> Database<'a> {
             0
         };
         while payload.len() < size {
-            *visits += 1;
-            if next == 0 || *visits > MAX_VISITS {
+            if next == 0 || !seen.insert(next) {
                 return None;
             }
             let overflow = self.page(next)?;
@@ -100,14 +108,13 @@ impl<'a> Database<'a> {
         Some(payload)
     }
 
-    /// The payload of every row of a table B-tree, in key order.
+    /// The payload of every row of a table B-tree, in key order; every page at most once (a loop is a damaged file).
     fn rows(&self, root: u32) -> Option<Vec<Vec<u8>>> {
         let mut rows = Vec::new();
         let mut stack = vec![root];
-        let mut visits = 0usize;
+        let mut seen = HashSet::new();
         while let Some(number) = stack.pop() {
-            visits += 1;
-            if visits > MAX_VISITS {
+            if !seen.insert(number) {
                 return None;
             }
             let page = self.page(number)?;
@@ -123,7 +130,7 @@ impl<'a> Database<'a> {
                             page,
                             at + read + key,
                             usize::try_from(size).ok()?,
-                            &mut visits,
+                            &mut seen,
                         )?);
                     }
                 }
@@ -268,6 +275,56 @@ mod tests {
         );
         assert_eq!(column("CREATE TABLE x (a TEXT)", "blob"), None);
         assert_eq!(column("nonsense", "a"), None);
+    }
+
+    /// A database of 512-byte pages whose schema (page 1) is an interior page pointing to `children`.
+    fn interior(children: &[u32]) -> Vec<u8> {
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend([0x02, 0x00, 1, 1, 0, 64, 32, 32]);
+        bytes.resize(512 * 3, 0);
+        let header = 100;
+        bytes[header] = 0x05;
+        let (right, cells) = children.split_last().unwrap();
+        bytes[header + 3..header + 5].copy_from_slice(&(cells.len() as u16).to_be_bytes());
+        bytes[header + 8..header + 12].copy_from_slice(&right.to_be_bytes());
+        for (i, child) in cells.iter().enumerate() {
+            let at = 400 + i * 8;
+            bytes[header + 12 + i * 2..header + 14 + i * 2]
+                .copy_from_slice(&(at as u16).to_be_bytes());
+            bytes[at..at + 4].copy_from_slice(&child.to_be_bytes());
+        }
+        // page 2: an empty leaf
+        bytes[512] = 0x0d;
+        bytes
+    }
+
+    #[test]
+    fn reads_every_page_at_most_once() {
+        let database = interior(&[2]);
+        assert_eq!(Database::open(&database).unwrap().rows(1), Some(vec![]));
+        let looped = interior(&[1]);
+        assert_eq!(
+            Database::open(&looped).unwrap().rows(1),
+            None,
+            "An interior page pointing to itself."
+        );
+        let shared = interior(&[2, 2]);
+        assert_eq!(
+            Database::open(&shared).unwrap().rows(1),
+            None,
+            "A page reached twice."
+        );
+        let mut leaf = interior(&[2]);
+        // page 2: one cell announcing a payload larger than the file
+        leaf[512 + 3..512 + 5].copy_from_slice(&1u16.to_be_bytes());
+        leaf[512 + 8..512 + 10].copy_from_slice(&300u16.to_be_bytes());
+        leaf[512 + 300..512 + 305].copy_from_slice(&[0x84, 0x80, 0x80, 0x80, 0x00]);
+        leaf[512 + 305] = 1;
+        assert_eq!(
+            Database::open(&leaf).unwrap().rows(1),
+            None,
+            "A payload larger than the file."
+        );
     }
 
     #[test]

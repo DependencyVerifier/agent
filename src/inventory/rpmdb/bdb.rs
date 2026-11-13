@@ -9,8 +9,7 @@ const KEY_DATA: u8 = 1;
 const OFF_PAGE: u8 = 3;
 const PAGE_HEADER: usize = 26;
 
-/// Overflow pages followed at most for one value.
-const MAX_CHAIN: usize = 1 << 16;
+use std::collections::HashSet;
 
 #[derive(Clone, Copy)]
 struct Order(bool);
@@ -64,10 +63,18 @@ impl<'a> Database<'a> {
         self.bytes.get(start..start.checked_add(self.page_size)?)
     }
 
-    /// A value stored on overflow pages: their data (`hf_offset` bytes each), up to its length.
-    fn overflow(&self, mut number: u32, length: usize) -> Option<Vec<u8>> {
-        let mut value = Vec::with_capacity(length.min(self.bytes.len()));
-        for _ in 0..MAX_CHAIN {
+    /// A value stored on overflow pages: their data (`hf_offset` bytes each), up to its length. A length larger than
+    /// the file, or an overflow page already read (by this value or another one), is a damaged file: no page is read
+    /// twice, so the values of a file are never larger than the file.
+    fn overflow(&self, mut number: u32, length: usize, seen: &mut HashSet<u32>) -> Option<Vec<u8>> {
+        if length > self.bytes.len() {
+            return None;
+        }
+        let mut value = Vec::with_capacity(length);
+        loop {
+            if !seen.insert(number) {
+                return None;
+            }
             let page = self.page(number)?;
             let used = self.order.u16(page, 22)?;
             value.extend_from_slice(page.get(PAGE_HEADER..PAGE_HEADER.checked_add(used)?)?);
@@ -77,16 +84,16 @@ impl<'a> Database<'a> {
                 return (value.len() == length).then_some(value);
             }
         }
-        None
     }
 
     /// The value of the item at `index` of a hash page (its key is the item before).
-    fn value(&self, page: &[u8], index: usize) -> Option<Vec<u8>> {
+    fn value(&self, page: &[u8], index: usize, seen: &mut HashSet<u32>) -> Option<Vec<u8>> {
         let at = self.order.u16(page, PAGE_HEADER + index * 2)?;
         match *page.get(at)? {
             OFF_PAGE => self.overflow(
                 self.order.u32(page, at + 4)?,
                 self.order.u32(page, at + 8)? as usize,
+                seen,
             ),
             KEY_DATA => {
                 // Items are laid from the end of the page backwards: this one ends where the previous begins.
@@ -106,6 +113,7 @@ impl<'a> Database<'a> {
 pub fn values(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
     let database = Database::open(bytes)?;
     let mut values = Vec::new();
+    let mut seen = HashSet::new();
     for number in 1..=database.last_page {
         let Some(page) = database.page(number) else {
             break;
@@ -115,7 +123,7 @@ pub fn values(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
         }
         let entries = database.order.u16(page, 20)?;
         for index in (1..entries).step_by(2) {
-            values.extend(database.value(page, index));
+            values.extend(database.value(page, index, &mut seen));
         }
     }
     Some(values)
@@ -195,6 +203,21 @@ mod tests {
             values(&short).unwrap().len(),
             1,
             "A chain shorter than its value: dropped."
+        );
+        let mut looped = database();
+        le32(&mut looped, 1536 + 16, 2);
+        le32(&mut looped, 512 + 486 + 8, 100_000);
+        assert_eq!(
+            values(&looped).unwrap().len(),
+            1,
+            "A chain looping on itself: dropped."
+        );
+        let mut huge = database();
+        le32(&mut huge, 512 + 486 + 8, u32::MAX);
+        assert_eq!(
+            values(&huge).unwrap().len(),
+            1,
+            "A length larger than the file: dropped."
         );
         let mut cut = database();
         cut.truncate(1536);

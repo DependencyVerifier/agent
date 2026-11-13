@@ -1,7 +1,7 @@
 //! Where the catalogers read: the host file system (under a root: `/`, or the `/host` mount), the files read from a
 //! running container (Docker archive API) or the files kept from the layers of an image. Reads are bounded.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -16,38 +16,76 @@ pub trait Files {
     fn list(&self, dir: &str) -> Vec<String>;
 }
 
-/// Symbolic links followed at most, inside the root.
-const MAX_LINKS: usize = 8;
+/// Symbolic links followed at most for one path, inside the root (Linux's own limit).
+const MAX_LINKS: usize = 40;
 
 pub struct Root(pub PathBuf);
 
-impl Root {
-    pub fn resolve(&self, path: &str) -> PathBuf {
-        self.0.join(path.trim_start_matches('/'))
+/// The components of an absolute path: `.` dropped, `..` applied, never above the root.
+fn components(path: &str) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            part => parts.push(part.to_owned()),
+        }
     }
+    parts
 }
 
 impl Root {
-    /// The real path of an absolute path under the root, its symbolic links resolved **inside the root** (an absolute
-    /// target is read under the root too, never on the agent's own file system).
+    /// An absolute path under the root, lexically (`..` never climbs above the root).
+    pub fn resolve(&self, path: &str) -> PathBuf {
+        components(path)
+            .iter()
+            .fold(self.0.clone(), |p, c| p.join(c))
+    }
+
+    /// The real path of an absolute path under the root: **every** component's symbolic link resolved inside the
+    /// root, one component at a time (an absolute target starts again from the root, `..` never climbs above it), so
+    /// nothing outside the root is ever read, whatever the links of the inspected file system say.
     fn real(&self, path: &str) -> Option<PathBuf> {
-        let mut current = path.to_owned();
-        for _ in 0..=MAX_LINKS {
-            let resolved = self.resolve(&current);
-            let metadata = std::fs::symlink_metadata(&resolved).ok()?;
-            if !metadata.file_type().is_symlink() {
-                return Some(resolved);
+        let mut pending: VecDeque<String> = components(path).into();
+        let mut done: Vec<String> = Vec::new();
+        let mut links = 0;
+        while let Some(part) = pending.pop_front() {
+            if part == ".." {
+                done.pop();
+                continue;
             }
-            let target = std::fs::read_link(&resolved).ok()?;
+            let candidate = done
+                .iter()
+                .chain([&part])
+                .fold(self.0.clone(), |p, c| p.join(c));
+            if !std::fs::symlink_metadata(&candidate)
+                .ok()?
+                .file_type()
+                .is_symlink()
+            {
+                done.push(part);
+                continue;
+            }
+            links += 1;
+            if links > MAX_LINKS {
+                return None;
+            }
+            let target = std::fs::read_link(&candidate).ok()?;
             let target = target.to_str()?;
-            current = if target.starts_with('/') {
-                target.to_owned()
-            } else {
-                let parent = current.rsplit_once('/').map_or("", |(p, _)| p);
-                format!("{parent}/{target}")
-            };
+            if target.starts_with('/') {
+                done.clear();
+            }
+            let mut next: VecDeque<String> = target
+                .split('/')
+                .filter(|p| !p.is_empty() && *p != ".")
+                .map(str::to_owned)
+                .collect();
+            next.extend(pending.drain(..));
+            pending = next;
         }
-        None
+        Some(done.iter().fold(self.0.clone(), |p, c| p.join(c)))
     }
 }
 
@@ -109,4 +147,71 @@ pub fn text(files: &dyn Files, path: &str) -> Option<String> {
     files
         .read(path)
         .map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn never_reads_outside_the_root() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), b"outside").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = Root(dir.path().join("root"));
+        std::fs::create_dir_all(root.0.join("etc/nginx/sites-available")).unwrap();
+        std::fs::create_dir_all(root.0.join("etc/real")).unwrap();
+        std::fs::write(root.0.join("etc/nginx/sites-available/shop"), b"inside").unwrap();
+        std::fs::write(root.0.join("etc/real/secret"), b"the root's").unwrap();
+        let out = outside.path().to_str().unwrap();
+
+        symlink(
+            "../nginx/sites-available/shop",
+            root.0.join("etc/nginx/relative"),
+        )
+        .unwrap();
+        symlink(
+            "/etc/nginx/sites-available/shop",
+            root.0.join("etc/nginx/absolute"),
+        )
+        .unwrap();
+        symlink(
+            format!("../../../../../../../../{out}/secret"),
+            root.0.join("etc/climb"),
+        )
+        .unwrap();
+        symlink(out, root.0.join("etc/outside")).unwrap();
+        symlink("/etc/real", root.0.join("etc/dir")).unwrap();
+        symlink("loop", root.0.join("etc/loop")).unwrap();
+
+        assert_eq!(root.read("/etc/nginx/relative").unwrap(), b"inside");
+        assert_eq!(
+            root.read("/etc/nginx/absolute").unwrap(),
+            b"inside",
+            "An absolute target, under the root."
+        );
+        assert_eq!(
+            root.read("/etc/climb"),
+            None,
+            "`..` never climbs above the root."
+        );
+        assert_eq!(
+            root.read("/etc/outside/secret"),
+            None,
+            "An absolute directory link, under the root: nothing there."
+        );
+        assert_eq!(
+            root.read("/etc/dir/secret").unwrap(),
+            b"the root's",
+            "A directory link resolved inside the root."
+        );
+        assert_eq!(root.read("/etc/loop"), None);
+        assert_eq!(
+            root.read("/../../etc/nginx/sites-available/shop").unwrap(),
+            b"inside"
+        );
+        assert_eq!(root.resolve("/../../x/./y/../z"), root.0.join("x/z"));
+        assert_eq!(root.list("/etc/dir"), vec!["secret".to_owned()]);
+    }
 }
