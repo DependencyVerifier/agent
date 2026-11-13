@@ -1,0 +1,1 @@
+{"name":"demo","version":"1.0.0","private":true,"dependencies":{"lodash":"4.17.20","@hotwired/turbo":"8.0.12","axios":"1.6.0"},"devDependencies":{"is-number":"7.0.0"}}

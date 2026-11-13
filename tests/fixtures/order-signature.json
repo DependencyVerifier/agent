@@ -1,0 +1,35 @@
+{
+  "description": "SET_CONFIG order signed by the console: Ed25519 over the RFC 8785 canonical JSON of `order`.",
+  "console_private_key_seed_hex": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+  "console_public_key": "ed25519:PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw=",
+  "signed_order": {
+    "order": {
+      "order_id": "019a6b2e-7c40-7d3e-9f1a-2b3c4d5e6f70",
+      "type": "SET_CONFIG",
+      "agent_id": "019a6b2c-1f00-7a11-8b22-3c44d55e6f01",
+      "issued_at": "2026-11-09T08:00:00Z",
+      "not_before": "2026-11-09T08:00:00Z",
+      "expires_at": "2026-11-09T08:15:00Z",
+      "payload": {
+        "config_version": 3,
+        "scan_interval_minutes": 360,
+        "discovery_roots": [
+          "/var/www",
+          "/srv"
+        ],
+        "declared_paths": [
+          "/opt/legacy-app"
+        ],
+        "exclusions": [
+          "/var/www/**/node_modules/.cache"
+        ]
+      }
+    },
+    "signature": {
+      "alg": "ed25519",
+      "key_id": "SHA256:OfcT0KZEJT8EUpQhufUbmwiXnQgpWVnE85kO5hf1E58",
+      "value": "EDG9e1pbf8AQ4lQss5C8rw77XHdkW0T6319xpyQeUud-KW4lEfDnGSq3w1yHH0NCmB7vIHTpUxATtDXHnk0uBg"
+    }
+  },
+  "canonical_order": "{\"agent_id\":\"019a6b2c-1f00-7a11-8b22-3c44d55e6f01\",\"expires_at\":\"2026-11-09T08:15:00Z\",\"issued_at\":\"2026-11-09T08:00:00Z\",\"not_before\":\"2026-11-09T08:00:00Z\",\"order_id\":\"019a6b2e-7c40-7d3e-9f1a-2b3c4d5e6f70\",\"payload\":{\"config_version\":3,\"declared_paths\":[\"/opt/legacy-app\"],\"discovery_roots\":[\"/var/www\",\"/srv\"],\"exclusions\":[\"/var/www/**/node_modules/.cache\"],\"scan_interval_minutes\":360},\"type\":\"SET_CONFIG\"}"
+}

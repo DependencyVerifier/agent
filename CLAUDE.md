@@ -34,10 +34,18 @@ Docker access in `container` mode: the agent **never mounts the Docker socket** 
 - Catalogers are written in-house (no Syft in Rust) and tested against **real fixtures** (dpkg status, apk installed, `installed.json`, lockfiles…).
 - Output: one CycloneDX SBOM per AppInstance, plus host facts, compressed and signed. Send only the content hash when nothing changed.
 
-## Expected crates (add when needed)
+## Design (v0.1)
 
-`tokio`, `rustls` (HTTP client on top of it), `ed25519-dalek`, `minisign-verify`, `serde` / `serde_json` / `serde_yaml`, `bollard`, `cyclonedx-bom`.
+- **Synchronous**, no async runtime: one loop (poll, orders, inventory), `std::thread::sleep` between polls. HTTP to the console with `ureq` 3 (rustls, built-in Mozilla roots or `AGENT_CA_FILE`, `HTTPS_PROXY` honoured, no redirect, 90 s timeout); the Docker API through a minimal read-only HTTP/1.1 client (`docker.rs`, TCP or Unix socket, chunked, streamed). Crates: `ureq`, `ed25519-dalek`, `sha2`, `base64`, `serde_json`, `flate2` (pure Rust), `tar`, `uuid`, `globset`, `getrandom`.
+- Modules: `config` (env only), `state` (state dir, atomic 0600 writes), `keys`, `signing` (§4, vector test), `jcs` (RFC 8785), `orders` (§7.2 in order, vector test), `client` (signed requests, clock offset, one retry on `clock_skew` / `invalid_signature` / `replayed_request`), `agent` (enroll, poll loop, inventory send, §9 reactions; exit status 3 = stopped for good), `inventory::{osrelease, purl, os, php, node, apps, discovery, runtimes, facts, containers, sbom, collect}`.
+- Determinism: SBOMs and host facts are `serde_json` values with sorted keys, components sorted by purl, no timestamp: an unchanged machine re-uploads nothing.
+- Containers: the scope filter (`containers::in_scope`) runs on the container list **before** any inspect or file read (tested). Application files come from `GET /containers/{id}/archive` (label paths, else the working directory and usual places); image OS packages from `GET /images/{id}/get`, layers streamed (legacy and OCI layouts, gzip or not), whiteouts applied, cached per image id and agent version in `<state>/images/`.
+- Not yet: RPM databases inside images (`rpmdb.sqlite`), `UPGRADE_AGENT` / `ROTATE_KEY`, `embedded` / `ecs` modes, the console-served `install.sh` and signed releases.
+
+## End-to-end test against a local console
+
+`depverify-agent inventory --dry-run` prints what would be sent, without a console. Against the dev console (`console/`): join its Docker network (`--network depverifier-console_default --add-host console.depverify.localhost:<php container IP>`), pass its Caddy root CA (`/data/caddy/pki/authorities/local/root.crt` of the `php` container) as `AGENT_CA_FILE`, its public key as `AGENT_CONSOLE_PUBKEY` (Enrollment section of a team) and a token from the console. For the container mode, run `tecnativa/docker-socket-proxy` on the same network and give the agent's container the `com.docker.compose.project` label.
 
 ## Conventions
 
-English code and comments. Keep `main.rs` thin; split into modules (`config`, `enroll`, `protocol`, `orders`, `catalogers::{dpkg,rpm,apk,composer,npm,yarn,pnpm,docker}`, `sbom`) as the code grows. Move to a Cargo workspace only when there is a real need.
+English code and comments. Keep `main.rs` thin. Move to a Cargo workspace only when there is a real need. Catalogers are tested against real files in `tests/fixtures` (taken from official images and real projects), never hand-written samples only.

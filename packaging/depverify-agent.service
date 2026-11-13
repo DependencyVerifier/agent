@@ -1,0 +1,47 @@
+# systemd unit of the agent in host mode (cadrage §6): a dedicated non-root user, a read-only view of the system,
+# its state in /var/lib/depverify-agent. The settings live in /etc/depverify-agent/agent.env (mode 0600).
+[Unit]
+Description=DependencyVerifier agent
+Documentation=https://github.com/DependencyVerifier/agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=depverify-agent
+Group=depverify-agent
+EnvironmentFile=/etc/depverify-agent/agent.env
+Environment=AGENT_MODE=host
+ExecStart=/usr/local/bin/depverify-agent run
+# 3: stopped for good (revoked, unknown, console key mismatch, token refused): never restarted in a loop.
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=3
+StateDirectory=depverify-agent
+StateDirectoryMode=0700
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/depverify-agent
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
