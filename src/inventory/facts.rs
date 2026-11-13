@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 
 use super::files::{self, Files};
 use super::osrelease::{self, OsRelease};
+use super::rhel;
 use super::{Document, FACTS_MEDIA_TYPE};
 
 pub struct HostFacts {
@@ -22,10 +23,15 @@ pub fn arch() -> &'static str {
 }
 
 pub fn os_release(files: &dyn Files) -> OsRelease {
-    files::text(files, "/etc/os-release")
+    let mut os = files::text(files, "/etc/os-release")
         .or_else(|| files::text(files, "/usr/lib/os-release"))
         .map(|t| osrelease::parse(&t))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if os.id == "rhel" {
+        os.channel = rhel::channel(files).map(str::to_owned);
+        os.releasever = rhel::releasever(files);
+    }
+    os
 }
 
 /// Read under the host root (`/` or `/host`); the kernel is the running one, shared by containers.

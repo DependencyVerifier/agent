@@ -129,6 +129,7 @@ pub const RPM_QUERY_FORMAT: &str =
 /// Lines of `rpm -qa --qf RPM_QUERY_FORMAT`.
 pub fn rpm(text: &str, os: &OsRelease) -> Vec<Package> {
     let distro = os.distro().unwrap_or_default();
+    let channel = os.channel.as_deref().unwrap_or("");
     let namespace = if os.id.is_empty() {
         "redhat"
     } else {
@@ -163,6 +164,7 @@ pub fn rpm(text: &str, os: &OsRelease) -> Vec<Package> {
             &full,
             &[
                 ("arch", arch),
+                ("channel", channel),
                 ("distro", &distro),
                 ("epoch", epoch),
                 ("upstream", upstream),
@@ -265,5 +267,35 @@ mod tests {
             "pkg:rpm/rocky/libgcc@11.4.1-2.1.el9?arch=x86_64&distro=rocky-9&upstream=gcc"
         );
         assert!(packages.iter().all(|p| p.purl.contains("distro=rocky-9")));
+    }
+
+    #[test]
+    fn marks_the_channel_of_a_subscribed_rhel() {
+        let line = "openssl\t1\t3.0.7\t27.el9_4\tx86_64\topenssl-3.0.7-27.el9_4.src.rpm\n";
+        let mut os = osrelease::parse(&fixture("os-release-ubi9"));
+        assert_eq!(
+            rpm(line, &os)[0].purl,
+            "pkg:rpm/rhel/openssl@3.0.7-27.el9_4?arch=x86_64&distro=rhel-9.9&epoch=1"
+        );
+        os.channel = Some("eus".into());
+        os.releasever = Some("9.4".into());
+        assert_eq!(
+            rpm(line, &os)[0].purl,
+            "pkg:rpm/rhel/openssl@3.0.7-27.el9_4?arch=x86_64&channel=eus&distro=rhel-9.4&epoch=1"
+        );
+    }
+
+    #[test]
+    fn reads_a_real_suse_rpm_query() {
+        let os = osrelease::parse(&fixture("os-release-sles156"));
+        let packages = rpm(&fixture("rpmdb/sles156-rpm-qa.txt"), &os);
+        assert_eq!(packages.len(), 138, "Without the 6 gpg-pubkey.");
+        let libssl = packages.iter().find(|p| p.name == "libopenssl3").unwrap();
+        assert!(
+            libssl.purl.starts_with("pkg:rpm/sles/libopenssl3@")
+                && libssl.purl.contains("distro=sles-15.6&upstream=openssl-3"),
+            "{}",
+            libssl.purl
+        );
     }
 }

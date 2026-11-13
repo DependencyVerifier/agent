@@ -13,6 +13,7 @@ pub mod os;
 pub mod osrelease;
 pub mod php;
 pub mod purl;
+pub mod rhel;
 pub mod rpmdb;
 pub mod runtimes;
 pub mod sbom;

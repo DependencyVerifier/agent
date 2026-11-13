@@ -1,16 +1,19 @@
 //! RPM databases read without `rpm` (an image has no command to run, and the agent runs none in it): SQLite
-//! (`rpmdb.sqlite`, RHEL 9, Fedora 33+, Amazon Linux 2023) and Berkeley DB hash (`Packages`, RHEL 7 and 8, CentOS),
-//! in pure Rust, read only, bounded. Each package header gives the same fields as the fixed `rpm -qa` command, so the
+//! (`rpmdb.sqlite`, RHEL 9, Fedora 33+, Amazon Linux 2023), ndb (`Packages.db`, SUSE and openSUSE) and Berkeley DB
+//! hash (`Packages`, RHEL 7 and 8, CentOS), in pure Rust, read only, bounded. Each package header gives the same fields as the fixed `rpm -qa` command, so the
 //! same cataloger reads both (`os::rpm`).
 
 pub mod bdb;
 pub mod header;
+pub mod ndb;
 pub mod sqlite;
 
-/// The headers of a database, by its format: SQLite (its magic), else Berkeley DB.
+/// The headers of a database, by its format: SQLite or ndb (their magic), else Berkeley DB.
 pub fn headers(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
     if bytes.starts_with(sqlite::MAGIC) {
         sqlite::blobs(bytes, "Packages", "blob")
+    } else if bytes.starts_with(ndb::MAGIC) {
+        ndb::blobs(bytes)
     } else {
         bdb::values(bytes)
     }
@@ -67,6 +70,15 @@ mod tests {
             super::query_lines(&fixture("rocky8-Packages.gz")).unwrap(),
             expected("rocky8-rpm-qa.txt"),
             "The 95 packages of rockylinux:8-minimal, as `rpm -qa` lists them."
+        );
+    }
+
+    #[test]
+    fn reads_an_ndb_database_like_rpm_does() {
+        assert_eq!(
+            super::query_lines(&fixture("sles156-Packages.db.gz")).unwrap(),
+            expected("sles156-rpm-qa.txt"),
+            "The 144 packages of registry.suse.com/bci/bci-base:15.6, as `rpm -qa` lists them."
         );
     }
 

@@ -405,10 +405,12 @@ pub fn image_packages(files: &Memory) -> Vec<Package> {
     packages
 }
 
-/// Where an image keeps its RPM database: SQLite (RHEL 9, Fedora, Amazon Linux 2023), else Berkeley DB (RHEL 7, 8).
-const RPM_DATABASES: [&str; 4] = [
+/// Where an image keeps its RPM database: SQLite (RHEL 9, Fedora, Amazon Linux 2023), ndb (SUSE), else Berkeley DB
+/// (RHEL 7, 8, older SUSE).
+pub const RPM_DATABASES: [&str; 5] = [
     "usr/lib/sysimage/rpm/rpmdb.sqlite",
     "var/lib/rpm/rpmdb.sqlite",
+    "usr/lib/sysimage/rpm/Packages.db",
     "usr/lib/sysimage/rpm/Packages",
     "var/lib/rpm/Packages",
 ];
