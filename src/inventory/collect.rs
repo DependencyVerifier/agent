@@ -7,7 +7,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use super::files::{Files, Memory, Root};
-use super::{Document, apps, containers, discovery, facts, fpm, os, runtimes, sbom};
+use super::{Document, apps, containers, discovery, facts, fpm, managers, os, runtimes, sbom};
 use crate::config::{Config, Mode, Scope};
 use crate::docker::Docker;
 use crate::state::CollectConfig;
@@ -139,7 +139,12 @@ pub fn collect(
     }
 
     let host_runtimes = if matches!(config.mode, Mode::Host | Mode::Embedded) {
-        runtimes::collect()
+        let mut found = runtimes::collect();
+        if let Some(root) = &root {
+            found.extend(managers::collect(root));
+        }
+        runtimes::sort(&mut found);
+        found
     } else {
         vec![]
     };

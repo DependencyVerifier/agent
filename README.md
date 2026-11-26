@@ -15,7 +15,8 @@ Lightweight agent of [DependencyVerifier](https://github.com/DependencyVerifier)
 | Source | How |
 |---|---|
 | OS packages | `/var/lib/dpkg/status` (and distroless `status.d/`), `/lib/apk/db/installed`, the fixed command `rpm -qa --qf …` (host mode) |
-| Runtimes | fixed commands: `php -v` / `-m`, `php-fpm* -v`, `composer --version`, `node -v`, `npm -v`, `yarn -v`, `pnpm -v` |
+| Runtimes | fixed commands, system directories only: `php -v` / `-m`, `php-fpm* -v`, `composer --version`, `node -v`, `npm -v`, `yarn -v`, `pnpm -v`, `python3* --version`, `ruby -v`, `rustc --version` |
+| Other installations | **read from files, never run**: Node, PHP, Python, Go, Ruby, Java and Rust installed by a version manager in a home of `/etc/passwd` (nvm, fnm, volta, n, asdf, mise, phpenv, phpbrew, pyenv, uv, goenv, gvm, rbenv, rvm, chruby, sdkman, rustup) or in `/usr/local/go`, `/usr/lib/go-*`, `/usr/lib/jvm`, `/opt/*jdk*`, `/usr/local/rustup`; the version comes from a file of the installation (`node_version.h`, `php_version.h`, `patchlevel.h`, `VERSION`, `rbconfig.rb`, the JDK `release`, the rustup channel manifest) |
 | Applications | under the discovery roots (`/var/www`, `/srv`, `/opt` by default) and the declared paths: `vendor/composer/installed.json` (else `composer.lock`), `package-lock.json`, `yarn.lock` (v1 and berry), `pnpm-lock.yaml` |
 | Containers | through the Docker API (GET only): the containers in scope, their application files (`/containers/{id}/archive`), their images analysed layer by layer (dpkg, apk), once per image id |
 
@@ -45,7 +46,14 @@ systemctl daemon-reload && systemctl enable --now depverify-agent
 journalctl -u depverify-agent   # the fingerprint to compare before approving the agent in the console
 ```
 
-The agent user needs read access to the application directories (group or ACL). The unit is hardened
+The agent user needs read access to the application directories (group or ACL), and to the homes holding version
+managers: `/root` is `0700` and Ubuntu's `/home/*` `0750`, so an nvm of root stays invisible until, for example:
+
+```bash
+setfacl -m u:depverify-agent:--x /root
+setfacl -R -m u:depverify-agent:rX /root/.nvm
+setfacl -R -d -m u:depverify-agent:rX /root/.nvm   # versions installed later
+``` The unit is hardened
 (`ProtectSystem=strict`, `NoNewPrivileges`, no capability); exit status 3 means stopped for good (revoked agent,
 refused token, console key mismatch).
 
