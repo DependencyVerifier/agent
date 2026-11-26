@@ -58,6 +58,28 @@ fn sleep(seconds: u64) {
     std::thread::sleep(jittered(seconds.max(1)));
 }
 
+/// Asks `probe` until it answers, pausing 1 s, 2 s, 4 s… up to 30 s between two tries (`pause` gets each wait).
+fn wait_until<T>(mut probe: impl FnMut() -> Option<T>, mut pause: impl FnMut(u64)) -> T {
+    let mut wait = 1;
+    loop {
+        if let Some(answer) = probe() {
+            return answer;
+        }
+        pause(wait);
+        wait = (wait * 2).min(30);
+    }
+}
+
+/// A Docker address fit for a log line: without the credentials of its userinfo (`ssh://user@host` → `ssh://host`).
+fn redacted_address(address: &str) -> String {
+    let Some((scheme, rest)) = address.split_once("://") else {
+        return address.to_owned();
+    };
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    format!("{scheme}://{host}{path}")
+}
+
 impl Agent {
     pub fn new(mut config: Config) -> Result<Self, String> {
         let store = Store::open(&config.state_dir)?;
@@ -123,6 +145,25 @@ impl Agent {
             None => &empty,
         };
         let (docker_facts, docker_name) = match &self.context.docker {
+            // In container mode the host is the Docker engine: never enroll before its API answers (the Docker proxy
+            // may start after the agent), or the host would be named after the agent's container, without its engine.
+            Some(docker) if self.config.mode == Mode::Container => {
+                let address = redacted_address(self.config.docker_host.as_deref().unwrap_or(""));
+                wait_until(
+                    || {
+                        let (facts, name) = crate::inventory::containers::docker_facts(docker);
+                        let answered = facts
+                            .get("engine_id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|id| !id.is_empty());
+                        answered.then_some((facts, name))
+                    },
+                    |wait| {
+                        log!("waiting for the Docker API at {address}, retrying in {wait} s");
+                        std::thread::sleep(Duration::from_secs(wait));
+                    },
+                )
+            }
             Some(docker) => crate::inventory::containers::docker_facts(docker),
             None => (Value::Null, None),
         };
@@ -687,6 +728,43 @@ pub fn proof_message(agent_id: &str, order_id: &str, new_public_key: &str) -> St
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn waits_with_a_doubling_pause_up_to_thirty_seconds() {
+        let mut tries = 0;
+        let mut pauses = vec![];
+        let answer = super::wait_until(
+            || {
+                tries += 1;
+                (tries == 8).then_some("engine")
+            },
+            |wait| pauses.push(wait),
+        );
+        assert_eq!(answer, "engine");
+        assert_eq!(pauses, vec![1, 2, 4, 8, 16, 30, 30]);
+        super::wait_until(|| Some(()), |_| panic!("no pause when it answers"));
+    }
+
+    #[test]
+    fn logs_a_docker_address_without_its_credentials() {
+        assert_eq!(
+            super::redacted_address("tcp://depverify-docker-proxy:2375"),
+            "tcp://depverify-docker-proxy:2375"
+        );
+        assert_eq!(
+            super::redacted_address("ssh://deploy:s3cret@docker.example:22/run"),
+            "ssh://docker.example:22/run"
+        );
+        assert_eq!(
+            super::redacted_address("tcp://user@proxy:2375"),
+            "tcp://proxy:2375"
+        );
+        assert_eq!(
+            super::redacted_address("unix:///var/run/docker.sock"),
+            "unix:///var/run/docker.sock"
+        );
+        assert_eq!(super::redacted_address("proxy:2375"), "proxy:2375");
+    }
+
     use super::*;
 
     #[test]
