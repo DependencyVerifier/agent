@@ -362,8 +362,24 @@ fn rust_version(manifest: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// What a version file of a user's home may report: a home is the user's to fill, and a link of it may point at a
+/// file the agent can read but the user cannot, so only a short value of a version's characters ever leaves.
 fn is_version(version: &str) -> bool {
-    version.starts_with(|c: char| c.is_ascii_digit()) && version.contains('.')
+    version.len() <= 40
+        && version.starts_with(|c: char| c.is_ascii_digit())
+        && version.contains('.')
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._+-".contains(c))
+}
+
+/// An implementor or build type of a JDK's `release` (`Azul Systems, Inc.`), same reason as `is_version`.
+fn is_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= 64
+        && label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || " .,-_()".contains(c))
 }
 
 /// The first file found among the entries of `dir` that `pick` keeps, at `entry/file` (bounded).
@@ -428,7 +444,7 @@ fn read(files: &dyn Files, kind: Kind, install: &str) -> Option<Map<String, Valu
         Kind::Java => {
             let release = file("release")?;
             for (key, field) in [("IMPLEMENTOR", "implementor"), ("BUILD_TYPE", "build_type")] {
-                if let Some(value) = release_value(&release, key).filter(|v| !v.is_empty()) {
+                if let Some(value) = release_value(&release, key).filter(|v| is_label(v)) {
                     fields.insert(field.into(), json!(value));
                 }
             }
@@ -619,6 +635,33 @@ mod tests {
         ] {
             assert_eq!(read(&files, kind, install), None, "{kind:?} at {install}");
         }
+    }
+
+    #[test]
+    fn reports_only_short_values_of_a_version_s_characters() {
+        let files = memory(&[
+            (
+                "/j/release",
+                b"IMPLEMENTOR=\"AGENT_TOKEN=dvet_secret\"\nBUILD_TYPE=\"commercial\"\nJAVA_VERSION=\"21.0.5\"\n".to_vec(),
+            ),
+            ("/k/release", b"JAVA_VERSION=\"21.0.5 secret\"\n".to_vec()),
+            ("/g/VERSION", format!("go1.{}\n", "2".repeat(40)).into_bytes()),
+            ("/c/release", fixture("release-corretto17")),
+        ]);
+
+        assert_eq!(
+            read(&files, Kind::Java, "/j").map(Value::Object),
+            Some(json!({"version": "21.0.5", "build_type": "commercial"})),
+            "An implementor out of the allowed characters is dropped."
+        );
+        assert_eq!(read(&files, Kind::Java, "/k"), None);
+        assert_eq!(read(&files, Kind::Go, "/g"), None, "Too long.");
+        assert!(
+            read(&files, Kind::Java, "/c").is_some(),
+            "A real `release` passes."
+        );
+        assert!(is_version("1.8.0_512") && is_version("17.0.21.1+2-LTS"));
+        assert!(!is_label(&"a".repeat(65)) && is_label(&"a".repeat(64)));
     }
 
     #[test]
