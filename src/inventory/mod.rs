@@ -8,6 +8,7 @@ pub mod discovery;
 pub mod facts;
 pub mod files;
 pub mod fpm;
+pub mod managers;
 pub mod node;
 pub mod os;
 pub mod osrelease;

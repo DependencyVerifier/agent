@@ -1,5 +1,6 @@
-//! Runtimes of a host, from a **fixed list of commands** (cadrage §6): never a shell, never an argument from the
-//! network, a timeout on each.
+//! Runtimes of a host, from a **fixed list of commands** (cadrage §6) run from the system directories only: never a
+//! shell, never an argument from the network, a timeout on each. What version managers install is read from files
+//! by `managers`, never run.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -104,6 +105,13 @@ pub fn php_extensions(output: &str) -> Vec<String> {
     extensions
 }
 
+/// Runtimes sorted by name then path, so that unchanged host facts keep their digest.
+pub fn sort(runtimes: &mut [Value]) {
+    runtimes.sort_by(|a, b| {
+        (a["name"].as_str(), a["path"].as_str()).cmp(&(b["name"].as_str(), b["path"].as_str()))
+    });
+}
+
 /// The runtimes of the host this agent runs on (host mode), sorted by name then path.
 pub fn collect() -> Vec<Value> {
     let mut runtimes = Vec::new();
@@ -132,17 +140,29 @@ pub fn collect() -> Vec<Value> {
             runtimes.push(runtime);
         }
     }
-    for (name, args) in [
+    let mut python: Vec<PathBuf> = matching("/usr/local/bin", "python3");
+    python.extend(matching("/usr/bin", "python3"));
+    for path in python {
+        if let Some(version) = run(&path, &["--version"]).as_deref().and_then(version_of) {
+            runtimes.push(
+                json!({"name": "python", "version": version, "path": path.to_string_lossy()}),
+            );
+        }
+    }
+    for (name, binary, args) in [
         (
+            "composer",
             "composer",
             &["--version", "--no-plugins", "--no-interaction"][..],
         ),
-        ("node", &["-v"][..]),
-        ("npm", &["-v"][..]),
-        ("yarn", &["-v"][..]),
-        ("pnpm", &["-v"][..]),
+        ("node", "node", &["-v"][..]),
+        ("npm", "npm", &["-v"][..]),
+        ("yarn", "yarn", &["-v"][..]),
+        ("pnpm", "pnpm", &["-v"][..]),
+        ("ruby", "ruby", &["-v"][..]),
+        ("rust", "rustc", &["--version"][..]),
     ] {
-        if let Some(path) = find(name) {
+        if let Some(path) = find(binary) {
             if let Some(version) = run(&path, args).as_deref().and_then(version_of) {
                 runtimes.push(
                     json!({"name": name, "version": version, "path": path.to_string_lossy()}),
@@ -150,9 +170,7 @@ pub fn collect() -> Vec<Value> {
             }
         }
     }
-    runtimes.sort_by(|a, b| {
-        (a["name"].as_str(), a["path"].as_str()).cmp(&(b["name"].as_str(), b["path"].as_str()))
-    });
+    sort(&mut runtimes);
     runtimes
 }
 
@@ -172,6 +190,15 @@ mod tests {
             Some("2.8.4".into())
         );
         assert_eq!(version_of("10.9.2"), Some("10.9.2".into()));
+        assert_eq!(version_of("Python 3.12.3\n"), Some("3.12.3".into()));
+        assert_eq!(
+            version_of("ruby 3.3.6 (2024-11-05 revision 75015d4c1f) [x86_64-linux-gnu]\n"),
+            Some("3.3.6".into())
+        );
+        assert_eq!(
+            version_of("rustc 1.75.0 (82e1608df 2023-12-21) (built from a source tarball)\n"),
+            Some("1.75.0".into())
+        );
         assert_eq!(version_of("nothing here"), None);
         assert_eq!(
             php_extensions("[PHP Modules]\nCore\nctype\n\n[Zend Modules]\nZend OPcache\nctype\n"),
