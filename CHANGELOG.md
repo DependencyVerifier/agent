@@ -1,11 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.4.1 (2026-11-27)
 
 **Security**
 - A fixed command is run only when the file it resolves to, and every directory above it, belong to root and are
   writable by root only: a link of `/usr/local/bin` into a user's home, or a binary a user may replace, is no longer
   run. A runtime installed that way is still reported when a version manager holds it (read from files).
+- Nothing else changes: same protocol, same systemd unit. `host` mode: **Upgrade to 0.4.1** from the console;
+  `container` and `embedded` modes: the digest of `ghcr.io/dependencyverifier/agent:0.4.1`.
 
 ## 0.4.0 (2026-11-27)
 
