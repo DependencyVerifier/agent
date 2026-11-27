@@ -7,8 +7,9 @@ Lightweight agent of [DependencyVerifier](https://github.com/DependencyVerifier)
 - Closed catalogue of signed orders, never arbitrary shell commands.
 - Container image: [`agent-image`](https://github.com/DependencyVerifier/agent-image) (`ghcr.io/dependencyverifier/agent`).
 
-> Status: protocol v1 complete (enrollment, signed polling, `SCAN_NOW` / `SET_CONFIG` orders, inventories), modes
-> `host` and `container`. Not released yet: build it from source or with [`agent-image`](https://github.com/DependencyVerifier/agent-image).
+> Status: protocol v1 complete (enrollment, signed polling, signed orders, inventories), modes `host`, `container` and
+> `embedded`. Signed releases on [GitHub](https://github.com/DependencyVerifier/agent/releases), changes in
+> [CHANGELOG.md](CHANGELOG.md).
 
 ## What it collects
 
@@ -53,7 +54,9 @@ managers: `/root` is `0700` and Ubuntu's `/home/*` `0750`, so an nvm of root sta
 setfacl -m u:depverify-agent:--x /root
 setfacl -R -m u:depverify-agent:rX /root/.nvm
 setfacl -R -d -m u:depverify-agent:rX /root/.nvm   # versions installed later
-``` The unit is hardened
+```
+
+The unit is hardened
 (`ProtectSystem=strict`, `NoNewPrivileges`, no capability); exit status 3 means stopped for good (revoked agent,
 refused token, console key mismatch).
 
