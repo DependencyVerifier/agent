@@ -1,8 +1,10 @@
 //! Runtimes of a host, from a **fixed list of commands** (cadrage §6) run from the system directories only: never a
 //! shell, never an argument from the network, a timeout on each. What version managers install is read from files
-//! by `managers`, never run.
+//! by `managers`, never run. A command is run only when it resolves to a file of root (`trusted`): a link of
+//! `/usr/local/bin` into a user's home is never followed.
 
 use std::io::Read;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -19,8 +21,11 @@ const DIRS: [&str; 6] = [
     "/sbin",
 ];
 
-/// Runs a fixed program with fixed arguments; its standard output, none on failure or timeout.
+/// Runs a fixed program with fixed arguments; its standard output, none on failure, timeout or an untrusted program.
 pub fn run(program: &Path, args: &[&str]) -> Option<String> {
+    if !trusted(program) {
+        return None;
+    }
     let mut child = Command::new(program)
         .args(args)
         .env_clear()
@@ -56,6 +61,17 @@ pub fn run(program: &Path, args: &[&str]) -> Option<String> {
             }
         }
     }
+}
+
+/// Whether a program may be run: the file it resolves to (links followed) and every directory above it belong to root
+/// and are writable by root only. A system directory holding a link into a home, or a binary a user may replace, is
+/// left alone, whatever account the agent runs as.
+fn trusted(program: &Path) -> bool {
+    program.canonicalize().is_ok_and(|real| {
+        real.ancestors().all(|path| {
+            std::fs::metadata(path).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0)
+        })
+    })
 }
 
 fn find(name: &str) -> Option<PathBuf> {
@@ -216,5 +232,22 @@ mod tests {
         );
         assert_eq!(run(Path::new("/nonexistent/binary"), &[]), None);
         assert_eq!(run(Path::new("/bin/false"), &[]), None);
+    }
+
+    #[test]
+    fn never_runs_a_program_a_user_may_replace() {
+        assert!(trusted(Path::new("/bin/echo")));
+        // A copy of echo in a directory everyone may write (the temporary directory), and a link to it.
+        let dir = std::env::temp_dir().join(format!("depverify-trusted-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join("echo");
+        std::fs::copy("/bin/echo", &copy).unwrap();
+        let link = dir.join("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&copy, &link).unwrap();
+        assert!(!trusted(&copy));
+        assert!(!trusted(&link));
+        assert_eq!(run(&copy, &["v1.2.3"]), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
