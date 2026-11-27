@@ -9,7 +9,7 @@ repository = "https://github.com/DependencyVerifier/agent"
 publish = false
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 blake2 = { version = "0.10", default-features = false }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
