@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+**Security**
+- A fixed command is run only when the file it resolves to, and every directory above it, belong to root and are
+  writable by root only: a link of `/usr/local/bin` into a user's home, or a binary a user may replace, is no longer
+  run. A runtime installed that way is still reported when a version manager holds it (read from files).
+
 ## 0.4.0 (2026-11-27)
 
 **Inventory**
