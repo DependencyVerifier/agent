@@ -52,3 +52,32 @@ jobs:
       - name: Check the binary is static
         run: file target/release/depverify-agent | tee /dev/stderr | grep -q 'static'
       - run: ./target/release/depverify-agent version
+
+  protocol:
+    name: Version managers match the protocol
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The normative host-facts schema closes the list of version managers: one the agent reports but the schema
+      # does not know would make its host facts invalid.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DependencyVerifier/.github
+          path: protocol
+          persist-credentials: false
+
+      - name: Compare the version managers with host-facts.schema.json
+        shell: python3 {0}
+        run: |
+          import json, pathlib, re, sys
+          code = set(re.findall(r'Some\("([a-z0-9_-]+)"\)', pathlib.Path('src/inventory/managers.rs').read_text()))
+          schema = json.loads(pathlib.Path('protocol/docs/protocol/schemas/host-facts.schema.json').read_text())
+          known = set(schema['properties']['runtimes']['items']['properties']['manager']['enum'])
+          print('agent:', sorted(code))
+          if code != known:
+              print('only in the agent:', sorted(code - known), '/ only in the schema:', sorted(known - code))
+              sys.exit(1)
